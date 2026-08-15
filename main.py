@@ -10,7 +10,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 # ============ CONFIGURATION ============
-TOKEN = "8875994072:AAHUbwcMmabM5UmsDKivRH1C6rj1mIQbpvM"
+TOKEN = "8875994072:AAGjHaMn526uaKXqBEswh53lIPZIm81qOCs"
 OWNER_ID = 8785590284
 ESCROW_USER = "@escrow2929"
 
