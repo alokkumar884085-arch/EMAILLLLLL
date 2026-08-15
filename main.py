@@ -5,12 +5,13 @@ import time
 import re
 import json
 import os
+import asyncio
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 # ============ CONFIGURATION ============
-TOKEN = "8875994072:AAGjHaMn526uaKXqBEswh53lIPZIm81qOCs"
+TOKEN = "8875994072:AAHUbwcMmabM5UmsDKivRH1C6rj1mIQbpvM"
 OWNER_ID = 8785590284
 ESCROW_USER = "@escrow2929"
 
@@ -52,6 +53,23 @@ def is_maintenance_mode():
     now = datetime.now()
     return now.hour >= MAINTENANCE_START or now.hour < MAINTENANCE_END
 
+# ============ SELF PING (HAR 3 MINUTE) ============
+async def self_ping(context: ContextTypes.DEFAULT_TYPE):
+    """Self ping every 3 minutes to keep bot alive"""
+    try:
+        await context.bot.send_message(
+            chat_id=OWNER_ID,
+            text=f"🔄 **BOT IS ALIVE!**\n\n"
+                 f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                 f"📦 Stock: {len(data['email_stock'])}\n"
+                 f"👥 Users: {len(data['users'])}\n"
+                 f"⏳ Pending: {len(data['pending'])}\n\n"
+                 f"✅ All systems working!"
+        )
+        logger.info("Self-ping sent successfully")
+    except Exception as e:
+        logger.error(f"Self-ping failed: {e}")
+
 # ============ COMMAND HANDLERS ============
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -74,6 +92,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start new Gmail verification - FIXED: Email properly deliver karega"""
     user_id = str(update.effective_user.id)
     username = update.effective_user.username or update.effective_user.first_name
     
@@ -94,18 +113,73 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⏳ Pending verification! Use /cancel", parse_mode='Markdown')
         return
     
+    # Assign email from stock
     email_data = data["email_stock"].pop(0)
-    gmail, password, recovery = email_data.split("|")
+    parts = email_data.split("|")
     
-    data["pending"][user_id] = {"gmail": gmail, "password": password, "recovery": recovery, "timestamp": str(datetime.now()), "username": username}
+    # Support both formats: Name|Email|Pass|Rec OR Email|Pass|Rec
+    if len(parts) == 4:
+        name, gmail, password, recovery = parts
+    else:
+        gmail, password, recovery = parts
+        name = username
+    
+    data["pending"][user_id] = {
+        "gmail": gmail, 
+        "password": password, 
+        "recovery": recovery,
+        "name": name,
+        "timestamp": str(datetime.now()), 
+        "username": username
+    }
     save_data(data)
     
-    await update.message.reply_text(
-        f"📧 **GMAIL ASSIGNED!**\n\n📧 `{gmail}`\n🔑 `{password}`\n📧 Recovery: `{recovery}`\n\n"
-        "📌 Login → Enable 2FA or /skip2fa → Upload QR → Enter OTP → Screenshot\n\n"
-        "⚡ /skip2fa - Skip 2FA\n/cancel - Cancel",
-        parse_mode='Markdown'
+    # ============ FIX: Email deliver karo with backup ============
+    message_text = (
+        f"📧 **GMAIL ASSIGNED!**\n\n"
+        f"👤 Name: `{name}`\n"
+        f"📧 Email: `{gmail}`\n"
+        f"🔑 Password: `{password}`\n"
+        f"📧 Recovery: `{recovery}`\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📌 **Next Steps:**\n"
+        "1️⃣ Login to this Gmail\n"
+        "2️⃣ Enable 2FA or /skip2fa\n"
+        "3️⃣ Upload QR Code\n"
+        "4️⃣ Enter OTP\n"
+        "5️⃣ Submit screenshot\n\n"
+        "⚡ **Commands:**\n"
+        "/skip2fa - Skip 2FA\n"
+        "/cancel - Cancel"
     )
+    
+    # Try to send message normally
+    try:
+        await update.message.reply_text(message_text, parse_mode='Markdown')
+        logger.info(f"Email assigned to {user_id}: {gmail}")
+    except Exception as e:
+        logger.error(f"Failed to send message to {user_id}: {e}")
+        # Backup: Send via DM
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=message_text,
+                parse_mode='Markdown'
+            )
+            logger.info(f"Email sent via DM to {user_id}: {gmail}")
+        except Exception as e2:
+            logger.error(f"DM also failed for {user_id}: {e2}")
+            # Return email to stock if both fail
+            data["email_stock"].insert(0, email_data)
+            del data["pending"][user_id]
+            save_data(data)
+            await context.bot.send_message(
+                OWNER_ID,
+                f"⚠️ **DELIVERY FAILED!**\n\n"
+                f"User: {username} (ID: {user_id})\n"
+                f"Email: {gmail}\n"
+                f"Please contact user manually."
+            )
 
 async def skip2fa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -178,12 +252,18 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     pending = data["pending"][user_id]
     gmail, password, recovery = pending["gmail"], pending["password"], pending["recovery"]
+    name = pending.get("name", username)
     
     data["users"][user_id] = {
-        "gmail": gmail, "password": password, "recovery": recovery,
+        "gmail": gmail, 
+        "password": password, 
+        "recovery": recovery,
+        "name": name,
         "timestamp": str(datetime.now()),
         "upi": data["users"].get(user_id, {}).get("upi", ""),
-        "balance": 15, "username": username, "completed": True,
+        "balance": 15, 
+        "username": username, 
+        "completed": True,
         "screenshot": file_id,
         "skip_2fa": pending.get("skip_2fa", False)
     }
@@ -195,15 +275,24 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Send to owner
     await context.bot.send_message(
         OWNER_ID,
-        f"✅ NEW VERIFIED!\n👤 @{username}\n📧 `{gmail}`\n🔑 `{password}`\n📧 Recovery: `{recovery}`\n"
-        f"📸 2FA: {'✅' if not pending.get('skip_2fa') else '❌ Skipped'}\n💰 ₹15 (Hold 5 Days)"
+        f"✅ **NEW VERIFIED!**\n\n"
+        f"👤 Name: {name}\n"
+        f"👤 User: @{username}\n"
+        f"📧 `{gmail}`\n"
+        f"🔑 `{password}`\n"
+        f"📧 Recovery: `{recovery}`\n"
+        f"📸 2FA: {'✅' if not pending.get('skip_2fa') else '❌ Skipped'}\n"
+        f"💰 ₹15 (Hold 5 Days)"
     )
     
     # Send to escrow
     try:
         await context.bot.send_message(
             "escrow2929",
-            f"✅ NEW GMAIL!\n👤 @{username}\n📧 `{gmail}`\n🔑 `{password}`\n💰 ₹15 (5 Days Hold)"
+            f"✅ **NEW GMAIL!**\n"
+            f"👤 @{username}\n"
+            f"📧 `{gmail}`\n"
+            f"💰 ₹15 (5 Days Hold)"
         )
     except:
         pass
@@ -212,8 +301,11 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(OWNER_ID, "⚠️ STOCK EMPTY! Upload new.")
     
     await update.message.reply_text(
-        f"🎉 **VERIFIED!** 🎉\n\n✅ Gmail: `{gmail}`\n💰 ₹15 (5 Days Hold)\n\n"
-        f"📧 Logged out!\n👑 Admin: {ESCROW_USER}",
+        f"🎉 **VERIFIED!** 🎉\n\n"
+        f"✅ Gmail: `{gmail}`\n"
+        f"💰 ₹15 (5 Days Hold)\n\n"
+        f"📧 Logged out!\n"
+        f"👑 Admin: {ESCROW_USER}",
         parse_mode='Markdown'
     )
 
@@ -221,10 +313,13 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id in data["pending"]:
         pending = data["pending"][user_id]
-        data["email_stock"].append(f"{pending['gmail']}|{pending['password']}|{pending['recovery']}")
+        # Return to stock with proper format
+        name = pending.get("name", pending.get("username", "User"))
+        email_data = f"{name}|{pending['gmail']}|{pending['password']}|{pending['recovery']}"
+        data["email_stock"].append(email_data)
         del data["pending"][user_id]
         save_data(data)
-        await update.message.reply_text("❌ Cancelled! Gmail returned.", parse_mode='Markdown')
+        await update.message.reply_text("❌ Cancelled! Gmail returned to stock.", parse_mode='Markdown')
     else:
         await update.message.reply_text("❌ No active session.", parse_mode='Markdown')
 
@@ -248,7 +343,12 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No account!", parse_mode='Markdown')
         return
     user = data["users"][user_id]
-    await update.message.reply_text(f"💰 Balance: ₹{user.get('balance', 0)}\n📧 Gmail: `{user.get('gmail', 'Not set')}`\n📌 UPI: `{user.get('upi', 'Not set')}`", parse_mode='Markdown')
+    await update.message.reply_text(
+        f"💰 **Balance:** ₹{user.get('balance', 0)}\n"
+        f"📧 Gmail: `{user.get('gmail', 'Not set')}`\n"
+        f"📌 UPI: `{user.get('upi', 'Not set')}`",
+        parse_mode='Markdown'
+    )
 
 async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -289,23 +389,42 @@ async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["withdraw_requests"].append(withdraw_data)
     save_data(data)
     
-    await context.bot.send_message(OWNER_ID, f"💰 WITHDRAWAL!\n👤 @{update.effective_user.username}\n📌 `{upi}`\n💰 ₹{amount}\n/approve {user_id} {amount}")
+    await context.bot.send_message(OWNER_ID, f"💰 **WITHDRAWAL!**\n👤 @{update.effective_user.username}\n📌 `{upi}`\n💰 ₹{amount}\n/approve {user_id} {amount}")
     await update.message.reply_text(f"✅ Request Sent!\n💰 ₹{amount}\n📌 Pending\n👑 Admin: {ESCROW_USER}", parse_mode='Markdown')
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id in data["pending"]:
-        await update.message.reply_text(f"⏳ Pending: `{data['pending'][user_id]['gmail']}`", parse_mode='Markdown')
+        pending = data["pending"][user_id]
+        await update.message.reply_text(
+            f"⏳ **PENDING VERIFICATION**\n\n"
+            f"📧 Gmail: `{pending['gmail']}`\n"
+            f"🔑 Password: `{pending['password']}`\n"
+            f"📧 Recovery: `{pending['recovery']}`\n\n"
+            f"📌 Complete verification or /cancel",
+            parse_mode='Markdown'
+        )
     elif user_id in data["users"] and data["users"][user_id].get("completed", False):
         user = data["users"][user_id]
-        await update.message.reply_text(f"✅ Verified: `{user['gmail']}`\n💰 ₹{user.get('balance', 0)}", parse_mode='Markdown')
+        await update.message.reply_text(
+            f"✅ **VERIFIED**\n\n"
+            f"📧 Gmail: `{user['gmail']}`\n"
+            f"💰 Balance: ₹{user.get('balance', 0)}",
+            parse_mode='Markdown'
+        )
     else:
         await update.message.reply_text("❌ No active verification. Use /new", parse_mode='Markdown')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📧 **HELP**\n\n"
-        "/new - Start\n/status - Status\n/balance - Balance\n/withdraw - Withdraw\n/setupi [UPI] - Set UPI\n/cancel - Cancel\n/help - Help\n\n"
+        "/new - Start verification\n"
+        "/status - Check status\n"
+        "/balance - Check balance\n"
+        "/withdraw - Withdraw earnings\n"
+        "/setupi [UPI] - Set UPI ID\n"
+        "/cancel - Cancel process\n"
+        "/help - This help\n\n"
         f"👑 Admin: {ESCROW_USER}",
         parse_mode='Markdown'
     )
@@ -317,7 +436,16 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
         return
     if not context.args:
-        await update.message.reply_text("Usage: /upload [gmail|pass|rec,gmail2|pass2|rec2]", parse_mode='Markdown')
+        await update.message.reply_text(
+            "📤 **UPLOAD FORMAT**\n\n"
+            "With Name:\n"
+            "/upload Name|Email|Pass|Recovery\n\n"
+            "Without Name:\n"
+            "/upload Email|Pass|Recovery\n\n"
+            "Multiple:\n"
+            "/upload Name1|Email1|Pass1|Rec1,Name2|Email2|Pass2|Rec2",
+            parse_mode='Markdown'
+        )
         return
     
     emails = context.args[0].split(",")
@@ -327,14 +455,25 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["email_stock"].append(email.strip())
             count += 1
     save_data(data)
-    await update.message.reply_text(f"✅ Added {count} emails. Total: {len(data['email_stock'])}", parse_mode='Markdown')
+    
+    await update.message.reply_text(
+        f"✅ **EMAIL STOCK UPDATED!**\n\n"
+        f"📤 Added: {count}\n"
+        f"📦 Total: {len(data['email_stock'])}",
+        parse_mode='Markdown'
+    )
 
 async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
         return
     await update.message.reply_text(
-        f"📊 **STOCK**\n\n📦 Available: {len(data['email_stock'])}\n✅ Used: {len(data['used_emails'])}\n⏳ Pending: {len(data['pending'])}\n👥 Users: {len(data['users'])}",
+        f"📊 **STOCK STATUS**\n\n"
+        f"📦 Available: {len(data['email_stock'])}\n"
+        f"✅ Used: {len(data['used_emails'])}\n"
+        f"⏳ Pending: {len(data['pending'])}\n"
+        f"👥 Users: {len(data['users'])}\n"
+        f"📌 Status: {'✅ Active' if data['email_stock'] else '⚠️ Empty'}",
         parse_mode='Markdown'
     )
 
@@ -370,6 +509,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TOKEN).build()
     
+    # User commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("new", new_command))
     app.add_handler(CommandHandler("skip2fa", skip2fa_command))
@@ -380,19 +520,28 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(CommandHandler("help", help_command))
     
+    # Admin commands
     app.add_handler(CommandHandler("upload", upload_command))
     app.add_handler(CommandHandler("stock", stock_command))
     app.add_handler(CommandHandler("approve", approve_command))
     
+    # Message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.PHOTO, handle_screenshot))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_screenshot))
     app.add_error_handler(error_handler)
     
-    print("🚀 Bot started!")
-    print(f"👑 Owner: {OWNER_ID}")
+    # ============ SELF PING - HAR 3 MINUTE ============
+    job_queue = app.job_queue
+    if job_queue:
+        job_queue.run_repeating(self_ping, interval=180, first=10)  # 180 seconds = 3 minutes
+        print("🔄 Self-ping scheduled (every 3 minutes)")
+    
+    print("🚀 Gmail 2FA Verification Bot started!")
+    print(f"👑 Owner ID: {OWNER_ID}")
     print(f"📦 Stock: {len(data['email_stock'])}")
+    print(f"🔄 Maintenance: {MAINTENANCE_START}:00 - {MAINTENANCE_END}:00 IST")
     
     app.run_polling()
 
