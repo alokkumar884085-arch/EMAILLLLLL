@@ -5,10 +5,10 @@ import time
 import re
 import json
 import os
+import asyncio
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-import asyncio
 
 # ============ CONFIGURATION ============
 TOKEN = "8875994072:AAHUbwcMmabM5UmsDKivRH1C6rj1mIQbpvM"
@@ -35,15 +35,15 @@ def load_data():
 
 def default_data():
     return {
-        "users": {},  # user_id: {"gmail": "", "password": "", "recovery": "", "timestamp": "", "upi": "", "balance": 0}
-        "pending": {},  # user_id: {"gmail": "", "password": "", "recovery": "", "timestamp": "", "status": "pending"}
-        "email_stock": [],  # ["gmail|password|recovery", ...]
-        "used_emails": [],  # ["gmail", ...]
+        "users": {},
+        "pending": {},
+        "email_stock": [],
+        "used_emails": [],
         "user_sessions": {},
         "otp_storage": {},
         "verified_users": {},
         "pending_payments": {},
-        "withdraw_requests": []  # {user_id, upi, amount, timestamp, status}
+        "withdraw_requests": []
     }
 
 def save_data(data):
@@ -63,7 +63,6 @@ def is_maintenance_mode():
     """Check if current time is in maintenance window (10 PM - 10 AM IST)"""
     now = datetime.now()
     current_hour = now.hour
-    # Maintenance from 10 PM (22) to 10 AM (10)
     if current_hour >= MAINTENANCE_START or current_hour < MAINTENANCE_END:
         return True
     return False
@@ -74,7 +73,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = str(user.id)
     
-    # Check maintenance
     if is_maintenance_mode():
         await update.message.reply_text(
             "🛠️ **MAINTENANCE MODE** 🛠️\n\n"
@@ -87,7 +85,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Initialize user if not exists
     if user_id not in data["users"]:
         data["users"][user_id] = {
             "gmail": "",
@@ -151,7 +148,6 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     username = update.effective_user.username or update.effective_user.first_name
     
-    # Check maintenance
     if is_maintenance_mode():
         await update.message.reply_text(
             "🛠️ **MAINTENANCE MODE** 🛠️\n\n"
@@ -162,7 +158,6 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check if user already completed
     if user_id in data["users"] and data["users"][user_id].get("completed", False):
         await update.message.reply_text(
             "❌ **Already Completed!**\n\n"
@@ -175,7 +170,6 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check if email stock is available
     if not data["email_stock"]:
         await update.message.reply_text(
             "❌ **No Email Stock Available!**\n\n"
@@ -184,7 +178,6 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Admin has been notified.",
             parse_mode='Markdown'
         )
-        # Notify owner
         await context.bot.send_message(
             OWNER_ID,
             f"⚠️ **EMAIL STOCK EMPTY!**\n\n"
@@ -193,7 +186,6 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check if user has pending
     if user_id in data["pending"]:
         await update.message.reply_text(
             "⏳ **You have a pending verification!**\n\n"
@@ -203,11 +195,9 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Assign email from stock
     email_data = data["email_stock"].pop(0)
     gmail, password, recovery = email_data.split("|")
     
-    # Store in pending
     data["pending"][user_id] = {
         "gmail": gmail,
         "password": password,
@@ -251,7 +241,6 @@ async def skip2fa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Mark as skipped 2FA
     data["pending"][user_id]["skip_2fa"] = True
     data["pending"][user_id]["step"] = "waiting_screenshot"
     save_data(data)
@@ -277,7 +266,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
     
-    # Check if user is in pending
     if user_id not in data["pending"]:
         return
     
@@ -291,18 +279,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     username = update.effective_user.username or update.effective_user.first_name
     
-    # Check if user is in pending
     if user_id not in data["pending"]:
         return
     
-    # Get photo
     photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     
-    # Store QR file ID
     data["pending"][user_id]["qr_file_id"] = photo.file_id
     
-    # Generate OTP (simulated)
     otp = random.randint(100000, 999999)
     data["pending"][user_id]["otp"] = otp
     data["pending"][user_id]["step"] = "waiting_otp"
@@ -325,7 +309,6 @@ async def handle_otp_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     username = update.effective_user.username or update.effective_user.first_name
     
-    # Validate OTP
     if not text.isdigit() or len(text) != 6:
         await update.message.reply_text(
             "❌ **Invalid OTP!**\n\n"
@@ -336,7 +319,6 @@ async def handle_otp_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check OTP
     if user_id not in data["pending"]:
         await update.message.reply_text(
             "❌ **No pending verification!**",
@@ -355,7 +337,6 @@ async def handle_otp_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # OTP Verified!
     data["pending"][user_id]["otp_verified"] = True
     data["pending"][user_id]["step"] = "waiting_screenshot"
     save_data(data)
@@ -379,11 +360,9 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     username = update.effective_user.username or update.effective_user.first_name
     
-    # Check if user is in pending
     if user_id not in data["pending"]:
         return
     
-    # Check if screenshot is sent
     if not update.message.photo and not update.message.document:
         await update.message.reply_text(
             "❌ **Please send a screenshot!**\n\n"
@@ -392,26 +371,23 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Get file ID
     if update.message.photo:
         file_id = update.message.photo[-1].file_id
     else:
         file_id = update.message.document.file_id
     
-    # Get pending data
     pending = data["pending"][user_id]
     gmail = pending["gmail"]
     password = pending["password"]
     recovery = pending["recovery"]
     
-    # Move to completed
     data["users"][user_id] = {
         "gmail": gmail,
         "password": password,
         "recovery": recovery,
         "timestamp": str(datetime.now()),
         "upi": data["users"].get(user_id, {}).get("upi", ""),
-        "balance": 15,  # Add ₹15
+        "balance": 15,
         "username": username,
         "completed": True,
         "screenshot": file_id,
@@ -419,14 +395,10 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "otp_verified": pending.get("otp_verified", False)
     }
     
-    # Add to used emails
     data["used_emails"].append(gmail)
-    
-    # Remove from pending
     del data["pending"][user_id]
     save_data(data)
     
-    # Send to Owner
     await context.bot.send_message(
         OWNER_ID,
         f"✅ **NEW GMAIL VERIFIED!**\n\n"
@@ -443,7 +415,6 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📌 **User UPI:** {data['users'][user_id].get('upi', 'Not set')}"
     )
     
-    # Send to Escrow
     try:
         await context.bot.send_message(
             "escrow2929",
@@ -461,7 +432,6 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Failed to send to escrow: {e}")
     
-    # Check if email stock is empty
     if not data["email_stock"]:
         await context.bot.send_message(
             OWNER_ID,
@@ -470,7 +440,6 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Please upload new stock using /upload."
         )
     
-    # Send success message to user
     await update.message.reply_text(
         f"🎉 **GMAIL VERIFIED SUCCESSFULLY!** 🎉\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -497,13 +466,11 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     
     if user_id in data["pending"]:
-        # Get email and return to stock
         pending = data["pending"][user_id]
         gmail = pending["gmail"]
         password = pending["password"]
         recovery = pending["recovery"]
         
-        # Return to stock
         data["email_stock"].append(f"{gmail}|{password}|{recovery}")
         del data["pending"][user_id]
         save_data(data)
@@ -536,7 +503,6 @@ async def setupi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     upi = context.args[0]
     
-    # Initialize user if not exists
     if user_id not in data["users"]:
         data["users"][user_id] = {
             "gmail": "",
@@ -657,7 +623,6 @@ async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Create withdrawal request
     withdraw_data = {
         "user_id": user_id,
         "username": update.effective_user.first_name,
@@ -672,7 +637,6 @@ async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["withdraw_requests"].append(withdraw_data)
     save_data(data)
     
-    # Notify owner
     await context.bot.send_message(
         OWNER_ID,
         f"💰 **NEW WITHDRAWAL REQUEST!** 💰\n\n"
@@ -786,7 +750,6 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Parse emails
     emails = context.args[0].split(",")
     count = 0
     
@@ -856,10 +819,8 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ User `{target_id}` not found.", parse_mode='Markdown')
         return
     
-    # Deduct balance
     data["users"][target_id]["balance"] -= amount
     
-    # Update withdrawal status
     for req in data.get("withdraw_requests", []):
         if req["user_id"] == target_id and req["amount"] == amount and req["status"] == "pending":
             req["status"] = "approved"
@@ -868,7 +829,6 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     save_data(data)
     
-    # Notify user
     await context.bot.send_message(
         int(target_id),
         f"💰 **WITHDRAWAL APPROVED!** 💰\n\n"
@@ -882,23 +842,6 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"✅ Withdrawal of ₹{amount} approved for user `{target_id}`", parse_mode='Markdown')
 
-async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View logs (Owner only)"""
-    user_id = update.effective_user.id
-    
-    if user_id != OWNER_ID:
-        await update.message.reply_text("❌ **Unauthorized!**", parse_mode='Markdown')
-        return
-    
-    with open("bot.log", "r") as f:
-        logs = f.read().split("\n")[-50:]  # Last 50 lines
-    
-    await update.message.reply_text(
-        f"📋 **RECENT LOGS**\n\n"
-        f"```\n{''.join(logs)}\n```",
-        parse_mode='Markdown'
-    )
-
 # ============ ERROR HANDLER ============
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {context.error}")
@@ -909,8 +852,11 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
 
-# ============ MAIN ============
+# ============ MAIN FUNCTION - FIXED FOR PYTHON 3.14 ============
 def main():
+    """Start the bot with Python 3.14 compatibility"""
+    
+    # Create application
     app = Application.builder().token(TOKEN).build()
     
     # User commands
@@ -928,7 +874,6 @@ def main():
     app.add_handler(CommandHandler("upload", upload_command))
     app.add_handler(CommandHandler("stock", stock_command))
     app.add_handler(CommandHandler("approve", approve_command))
-    app.add_handler(CommandHandler("logs", logs_command))
     
     # Message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -945,7 +890,21 @@ def main():
     print(f"📦 Stock: {len(data['email_stock'])}")
     print(f"🔄 Maintenance: {MAINTENANCE_START}:00 - {MAINTENANCE_END}:00 IST")
     print("💰 Ready to verify Gmails!")
-    app.run_polling()
+    
+    # ============ FIX FOR PYTHON 3.14 ============
+    # Use asyncio.run() instead of app.run_polling() directly
+    try:
+        # Try to get existing event loop
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If loop is already running, start polling
+            app.run_polling()
+        else:
+            # If loop exists but not running, use asyncio.run()
+            asyncio.run(app.run_polling())
+    except RuntimeError:
+        # No event loop exists - create one
+        asyncio.run(app.run_polling())
 
 if __name__ == "__main__":
     main()
