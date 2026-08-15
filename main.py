@@ -111,7 +111,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📋 **STEPS:**
 
-1️⃣ /new - Start new Gmail verification
+1️⃣ /new - Start new verification
 2️⃣ Upload 2FA QR Code or Submit without 2FA
 3️⃣ Enter OTP (if 2FA enabled)
 4️⃣ Submit screenshot proof
@@ -277,7 +277,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle QR code upload"""
     user_id = str(update.effective_user.id)
-    username = update.effective_user.username or update.effective_user.first_name
     
     if user_id not in data["pending"]:
         return
@@ -307,7 +306,6 @@ async def handle_otp_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle OTP input"""
     user_id = str(update.effective_user.id)
     text = update.message.text.strip()
-    username = update.effective_user.username or update.effective_user.first_name
     
     if not text.isdigit() or len(text) != 6:
         await update.message.reply_text(
@@ -852,11 +850,9 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
 
-# ============ MAIN FUNCTION - FIXED FOR PYTHON 3.14 ============
-def main():
-    """Start the bot with Python 3.14 compatibility"""
-    
-    # Create application
+# ============ MAIN FUNCTION - PYTHON 3.14 FIXED ============
+async def run_bot():
+    """Async main function to run bot"""
     app = Application.builder().token(TOKEN).build()
     
     # User commands
@@ -891,20 +887,16 @@ def main():
     print(f"🔄 Maintenance: {MAINTENANCE_START}:00 - {MAINTENANCE_END}:00 IST")
     print("💰 Ready to verify Gmails!")
     
-    # ============ FIX FOR PYTHON 3.14 ============
-    # Use asyncio.run() instead of app.run_polling() directly
+    # Start polling
+    await app.run_polling()
+
+def main():
+    """Main function - Python 3.14 compatible"""
     try:
-        # Try to get existing event loop
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If loop is already running, start polling
-            app.run_polling()
-        else:
-            # If loop exists but not running, use asyncio.run()
-            asyncio.run(app.run_polling())
-    except RuntimeError:
-        # No event loop exists - create one
-        asyncio.run(app.run_polling())
+        # Try to run async function
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        print("\n⚠️ Bot stopped by user")
 
 if __name__ == "__main__":
     main()
