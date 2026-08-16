@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from telegram.request import HTTPXRequest
 
 # ============ CONFIGURATION ============
-TOKEN = "8875994072:AAFEw8QGWPrfIOw6SGoVo6H-bk3ioLI9uEk"
+TOKEN = "8875994072:AAHUbwcMmabM5UmsDKivRH1C6rj1mIQbpvM"
 OWNER_ID = 8785590284
 ESCROW_USER = "@escrow2929"
 
@@ -126,7 +126,6 @@ def check_pending_timeout():
         pending = data["pending"][user_id]
         name = pending.get("name", pending.get("username", "User"))
         
-        # Return to appropriate stock
         if pending.get("type") == "email":
             email_data = f"{name}|{pending['gmail']}|{pending['password']}|{pending['recovery']}"
             data["email_stock"].append(email_data)
@@ -469,6 +468,102 @@ async def skip2fa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data(data)
     await update.message.reply_text("✅ 2FA Skipped!\n📸 Send screenshot proof.", parse_mode='Markdown')
 
+# ============ HANDLE OTP INPUT ============
+async def handle_otp_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global data
+    data = load_data()
+    user_id = str(update.effective_user.id)
+    text = update.message.text.strip()
+    
+    if not text.isdigit() or len(text) != 6:
+        await update.message.reply_text("❌ Enter 6-digit OTP!", parse_mode='Markdown')
+        return
+    
+    if user_id not in data["pending"]:
+        await update.message.reply_text("❌ No pending email work!", parse_mode='Markdown')
+        return
+    
+    stored_otp = data["pending"][user_id].get("otp")
+    if stored_otp and int(text) == stored_otp:
+        data["pending"][user_id]["otp_verified"] = True
+        data["pending"][user_id]["step"] = "waiting_screenshot"
+        save_data(data)
+        await update.message.reply_text(
+            "✅ **OTP Verified!**\n\n"
+            "📸 Now send a screenshot of Gmail inbox & settings as proof.",
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text("❌ Wrong OTP! Try again.", parse_mode='Markdown')
+
+# ============ HANDLE MESSAGE ============
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global data
+    data = load_data()
+    user_id = str(update.effective_user.id)
+    text = update.message.text
+    
+    if not text:
+        return
+    
+    # Check if user is in email pending and waiting for OTP
+    if user_id in data.get("pending", {}):
+        pending = data["pending"][user_id]
+        if pending.get("step") == "waiting_otp":
+            await handle_otp_input(update, context)
+            return
+        
+        if pending.get("type") == "email":
+            await update.message.reply_text(
+                f"📧 **EMAIL WORK**\n\n"
+                f"📧 Email: `{pending.get('gmail', '')}`\n"
+                f"🔑 Pass: `{pending.get('password', '')}`\n\n"
+                "📌 **Next Steps:**\n"
+                "1. Login to Gmail\n"
+                "2. Enable 2FA or use /skip2fa\n"
+                "3. Upload QR code (photo)\n"
+                "4. Enter OTP (6 digits)\n"
+                "5. Send screenshot proof\n\n"
+                "⚡ Commands:\n"
+                "/skip2fa - Skip 2FA\n"
+                "/cancel - Cancel work",
+                parse_mode='Markdown'
+            )
+        return
+    
+    # Check if user is in QR pending
+    if user_id in data.get("pending_qr", {}):
+        await update.message.reply_text(
+            "📱 **QR PENDING**\n\n"
+            "Please send a screenshot of the QR being used/scanned.\n"
+            "Send a PHOTO as proof.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Check if user is in Review pending
+    if user_id in data.get("pending_review", {}):
+        await update.message.reply_text(
+            "📝 **REVIEW PENDING**\n\n"
+            "Please send a screenshot of the review completion.\n"
+            "Send a PHOTO as proof.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Default response
+    await update.message.reply_text(
+        "❌ **Unknown command**\n\n"
+        "📌 Available commands:\n"
+        "/email - Get email work\n"
+        "/qr - Get QR work\n"
+        "/revive - Get review work\n"
+        "/status - Check status\n"
+        "/balance - Check balance\n"
+        "/help - Show all commands",
+        parse_mode='Markdown'
+    )
+
 # ============ HANDLE PHOTO ============
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
@@ -482,16 +577,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         file_id = photo.file_id
         
-        # Complete QR verification
         data["qr_used"].append(pending["qr_data"])
         
-        # Add to user's balance
         if user_id not in data["users"]:
             data["users"][user_id] = {"balance": 0, "username": username, "completed": False}
         data["users"][user_id]["balance"] = data["users"][user_id].get("balance", 0) + 15
         data["users"][user_id]["qr_done"] = True
         
-        # Mark QR as approved
         for qr in data.get("qr_history", []):
             if qr["data"] == pending["qr_data"] and qr["status"] == "pending":
                 qr["status"] = "approved"
@@ -501,7 +593,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del data["pending_qr"][user_id]
         save_data(data)
         
-        # Send to admins
         for admin in ADMINS:
             try:
                 await context.bot.send_message(
@@ -523,16 +614,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         file_id = photo.file_id
         
-        # Complete review verification
         data["review_used"].append(pending["review_data"])
         
-        # Add to user's balance
         if user_id not in data["users"]:
             data["users"][user_id] = {"balance": 0, "username": username, "completed": False}
         data["users"][user_id]["balance"] = data["users"][user_id].get("balance", 0) + 15
         data["users"][user_id]["review_done"] = True
         
-        # Mark review as approved
         for rev in data.get("review_history", []):
             if rev["data"] == pending["review_data"] and rev["status"] == "pending":
                 rev["status"] = "approved"
@@ -564,7 +652,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photo = update.message.photo[-1]
             file_id = photo.file_id
             
-            # Complete email verification
             gmail = pending.get("gmail")
             password = pending.get("password")
             recovery = pending.get("recovery")
@@ -580,7 +667,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             data["used_emails"].append(gmail)
             
-            # Mark email upload as approved
             for upload in data.get("upload_history", []):
                 if upload["raw"].find(gmail) != -1 and upload["status"] == "pending":
                     upload["status"] = "approved"
@@ -618,9 +704,13 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = pending.get("name", "User")
             email_data = f"{name}|{pending['gmail']}|{pending['password']}|{pending['recovery']}"
             data["email_stock"].append(email_data)
+        elif pending.get("type") == "qr":
+            data["qr_stock"].append(pending.get("qr_data"))
+        elif pending.get("type") == "review":
+            data["review_stock"].append(pending.get("review_data"))
         del data["pending"][user_id]
         save_data(data)
-        await update.message.reply_text("❌ Cancelled! Gmail returned.", parse_mode='Markdown')
+        await update.message.reply_text("❌ Cancelled! Work returned.", parse_mode='Markdown')
     elif user_id in data.get("pending_qr", {}):
         pending = data["pending_qr"][user_id]
         data["qr_stock"].append(pending["qr_data"])
@@ -718,7 +808,6 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data["users"][target_id]["balance"] -= amount
     
-    # Update withdrawal status
     for req in data.get("withdraw_requests", []):
         if req["user_id"] == target_id and req["amount"] == amount and req["status"] == "pending":
             req["status"] = "approved"
