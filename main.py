@@ -6,6 +6,7 @@ import re
 import json
 import os
 import asyncio
+import pytz
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -18,18 +19,56 @@ ESCROW_USER = "@escrow2929"
 
 ADMINS = [OWNER_ID]
 
+# ============ TIME CONFIGURATION (INDIAN TIME - IST) ============
+# Bot ON: 8 AM to 10 PM IST
+# Bot OFF (Maintenance): 10 PM to 8 AM IST
+MAINTENANCE_START_HOUR = 22  # 10 PM
+MAINTENANCE_END_HOUR = 8     # 8 AM
+
 # ============ LIMITS ============
 MAX_EMAIL_UPLOAD = 1000
 MAX_QR_UPLOAD = 100
 MAX_REVIEW_UPLOAD = 500
 
-# ============ TIME CONFIGURATION ============
-MAINTENANCE_START = 22
-MAINTENANCE_END = 10
+# ============ TASK TIMEOUTS ============
 TASK_TIMEOUT_MINUTES = 15
 QR_EXPIRE_MINUTES = 5
 REVIEW_EXPIRE_MINUTES = 10
 COOLDOWN_MINUTES = 2
+
+# ============ IST TIMEZONE ============
+IST = pytz.timezone('Asia/Kolkata')
+
+def get_ist_now():
+    """Get current time in IST"""
+    return datetime.now(IST)
+
+def is_maintenance_mode():
+    """Check if current IST time is in maintenance window (10 PM - 8 AM)"""
+    now = get_ist_now()
+    current_hour = now.hour
+    
+    # Maintenance: 10 PM (22) to 8 AM (8)
+    if current_hour >= MAINTENANCE_START_HOUR or current_hour < MAINTENANCE_END_HOUR:
+        return True
+    return False
+
+def get_next_start_time():
+    """Get next bot start time in IST"""
+    now = get_ist_now()
+    current_hour = now.hour
+    
+    if current_hour >= MAINTENANCE_START_HOUR:  # After 10 PM
+        # Next start is tomorrow 8 AM
+        next_start = now.replace(hour=MAINTENANCE_END_HOUR, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    elif current_hour < MAINTENANCE_END_HOUR:  # Before 8 AM
+        # Next start is today 8 AM
+        next_start = now.replace(hour=MAINTENANCE_END_HOUR, minute=0, second=0, microsecond=0)
+    else:
+        # Bot is currently running
+        next_start = None
+    
+    return next_start
 
 # ============ DATABASE ============
 DATA_FILE = "bot_data.json"
@@ -84,10 +123,6 @@ logger = logging.getLogger(__name__)
 def is_admin(user_id):
     return user_id in ADMINS or user_id == OWNER_ID
 
-def is_maintenance_mode():
-    now = datetime.now()
-    return now.hour >= MAINTENANCE_START or now.hour < MAINTENANCE_END
-
 # ============ SELF PING ============
 PING_COUNT = 0
 
@@ -95,16 +130,19 @@ async def self_ping(context: ContextTypes.DEFAULT_TYPE):
     global PING_COUNT, data
     PING_COUNT += 1
     data = load_data()
+    now = get_ist_now()
+    
     try:
         await context.bot.send_message(
             chat_id=OWNER_ID,
             text=f"🔄 **BOT ALIVE** #{PING_COUNT}\n\n"
-                 f"⏰ {datetime.now().strftime('%H:%M:%S')}\n"
+                 f"⏰ IST Time: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
                  f"📦 Email Stock: {len(data['email_stock'])}\n"
                  f"📱 QR Stock: {len(data['qr_stock'])}\n"
                  f"📝 Review Stock: {len(data['review_stock'])}\n"
                  f"👥 Users: {len(data['users'])}\n"
-                 f"⏳ Pending: {len(data['pending'])}"
+                 f"⏳ Pending: {len(data['pending'])}\n"
+                 f"🔄 Status: {'🟢 ONLINE' if not is_maintenance_mode() else '🔴 MAINTENANCE'}"
         )
     except Exception as e:
         logger.error(f"Self ping failed: {e}")
@@ -112,12 +150,15 @@ async def self_ping(context: ContextTypes.DEFAULT_TYPE):
 # ============ CHECK TIMEOUT ============
 def check_pending_timeout():
     global data
-    now = datetime.now()
+    now = get_ist_now()
     to_remove = []
     for user_id, pending in data["pending"].items():
         if "timestamp" in pending:
             try:
                 start_time = datetime.fromisoformat(pending["timestamp"])
+                # Convert to IST if naive
+                if start_time.tzinfo is None:
+                    start_time = IST.localize(start_time)
                 if (now - start_time).total_seconds() > TASK_TIMEOUT_MINUTES * 60:
                     to_remove.append(user_id)
             except:
@@ -134,7 +175,7 @@ def check_pending_timeout():
         elif pending.get("type") == "review":
             data["review_stock"].append(pending.get("review_data"))
         
-        data["cooldowns"][user_id] = (datetime.now() + timedelta(minutes=COOLDOWN_MINUTES)).isoformat()
+        data["cooldowns"][user_id] = (now + timedelta(minutes=COOLDOWN_MINUTES)).isoformat()
         del data["pending"][user_id]
         save_data(data)
 
@@ -147,12 +188,14 @@ async def check_timeout_job(context: ContextTypes.DEFAULT_TYPE):
 # ============ CHECK QR EXPIRE ============
 def check_qr_expire():
     global data
-    now = datetime.now()
+    now = get_ist_now()
     to_remove = []
     for user_id, pending in data.get("pending_qr", {}).items():
         if "timestamp" in pending:
             try:
                 start_time = datetime.fromisoformat(pending["timestamp"])
+                if start_time.tzinfo is None:
+                    start_time = IST.localize(start_time)
                 if (now - start_time).total_seconds() > QR_EXPIRE_MINUTES * 60:
                     to_remove.append(user_id)
             except:
@@ -172,12 +215,14 @@ async def check_qr_expire_job(context: ContextTypes.DEFAULT_TYPE):
 # ============ CHECK REVIEW EXPIRE ============
 def check_review_expire():
     global data
-    now = datetime.now()
+    now = get_ist_now()
     to_remove = []
     for user_id, pending in data.get("pending_review", {}).items():
         if "timestamp" in pending:
             try:
                 start_time = datetime.fromisoformat(pending["timestamp"])
+                if start_time.tzinfo is None:
+                    start_time = IST.localize(start_time)
                 if (now - start_time).total_seconds() > REVIEW_EXPIRE_MINUTES * 60:
                     to_remove.append(user_id)
             except:
@@ -250,7 +295,7 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["upload_counter"] = data.get("upload_counter", 0) + 1
             data["upload_history"].append({
                 "id": data["upload_counter"], "raw": email,
-                "status": "pending", "timestamp": datetime.now().isoformat()
+                "status": "pending", "timestamp": get_ist_now().isoformat()
             })
             count += 1
     save_data(data)
@@ -282,7 +327,7 @@ async def uploadqr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["qr_upload_counter"] = data.get("qr_upload_counter", 0) + 1
     data["qr_history"].append({
         "id": data["qr_upload_counter"], "data": qr_data,
-        "status": "pending", "timestamp": datetime.now().isoformat()
+        "status": "pending", "timestamp": get_ist_now().isoformat()
     })
     save_data(data)
     await update.message.reply_text(
@@ -310,7 +355,7 @@ async def uploadr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["review_upload_counter"] = data.get("review_upload_counter", 0) + 1
     data["review_history"].append({
         "id": data["review_upload_counter"], "data": review_data,
-        "status": "pending", "timestamp": datetime.now().isoformat()
+        "status": "pending", "timestamp": get_ist_now().isoformat()
     })
     save_data(data)
     await update.message.reply_text(
@@ -326,13 +371,33 @@ async def email_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or update.effective_user.first_name
     
     if is_maintenance_mode():
-        await update.message.reply_text("🛠️ Maintenance Mode!", parse_mode='Markdown')
+        next_start = get_next_start_time()
+        if next_start:
+            time_str = next_start.strftime('%I:%M %p')
+            await update.message.reply_text(
+                f"🛠️ **MAINTENANCE MODE**\n\n"
+                f"Bot is currently in maintenance.\n"
+                f"⏰ **Timing:** 10 PM - 8 AM IST\n"
+                f"🔄 Bot will be back at **{time_str}**\n\n"
+                f"Please try again later!",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                "🛠️ **MAINTENANCE MODE**\n\n"
+                "Bot is currently in maintenance.\n"
+                "⏰ **Timing:** 10 PM - 8 AM IST\n\n"
+                "Please try again after 8 AM!",
+                parse_mode='Markdown'
+            )
         return
     
     if user_id in data.get("cooldowns", {}):
         cooldown_end = datetime.fromisoformat(data["cooldowns"][user_id])
-        if datetime.now() < cooldown_end:
-            remaining = (cooldown_end - datetime.now()).seconds // 60
+        if cooldown_end.tzinfo is None:
+            cooldown_end = IST.localize(cooldown_end)
+        if get_ist_now() < cooldown_end:
+            remaining = (cooldown_end - get_ist_now()).seconds // 60
             await update.message.reply_text(f"⏳ Cooldown: {remaining + 1} min", parse_mode='Markdown')
             return
         else:
@@ -362,7 +427,7 @@ async def email_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["pending"][user_id] = {
         "type": "email", "gmail": gmail, "password": password,
         "recovery": recovery, "name": name, "username": username,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": get_ist_now().isoformat()
     }
     save_data(data)
     
@@ -390,7 +455,24 @@ async def qr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or update.effective_user.first_name
     
     if is_maintenance_mode():
-        await update.message.reply_text("🛠️ Maintenance Mode!", parse_mode='Markdown')
+        next_start = get_next_start_time()
+        if next_start:
+            time_str = next_start.strftime('%I:%M %p')
+            await update.message.reply_text(
+                f"🛠️ **MAINTENANCE MODE**\n\n"
+                f"Bot is currently in maintenance.\n"
+                f"⏰ **Timing:** 10 PM - 8 AM IST\n"
+                f"🔄 Bot will be back at **{time_str}**",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                "🛠️ **MAINTENANCE MODE**\n\n"
+                "Bot is currently in maintenance.\n"
+                "⏰ **Timing:** 10 PM - 8 AM IST\n\n"
+                "Please try again after 8 AM!",
+                parse_mode='Markdown'
+            )
         return
     
     if user_id in data.get("pending_qr", {}):
@@ -404,7 +486,7 @@ async def qr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     qr_data = data["qr_stock"].pop(0)
     data["pending_qr"][user_id] = {
         "qr_data": qr_data, "username": username,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": get_ist_now().isoformat()
     }
     save_data(data)
     
@@ -425,7 +507,24 @@ async def revive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or update.effective_user.first_name
     
     if is_maintenance_mode():
-        await update.message.reply_text("🛠️ Maintenance Mode!", parse_mode='Markdown')
+        next_start = get_next_start_time()
+        if next_start:
+            time_str = next_start.strftime('%I:%M %p')
+            await update.message.reply_text(
+                f"🛠️ **MAINTENANCE MODE**\n\n"
+                f"Bot is currently in maintenance.\n"
+                f"⏰ **Timing:** 10 PM - 8 AM IST\n"
+                f"🔄 Bot will be back at **{time_str}**",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                "🛠️ **MAINTENANCE MODE**\n\n"
+                "Bot is currently in maintenance.\n"
+                "⏰ **Timing:** 10 PM - 8 AM IST\n\n"
+                "Please try again after 8 AM!",
+                parse_mode='Markdown'
+            )
         return
     
     if user_id in data.get("pending_review", {}):
@@ -439,7 +538,7 @@ async def revive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     review_data = data["review_stock"].pop(0)
     data["pending_review"][user_id] = {
         "review_data": review_data, "username": username,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": get_ist_now().isoformat()
     }
     save_data(data)
     
@@ -506,7 +605,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
     
-    # Check if user is in email pending and waiting for OTP
     if user_id in data.get("pending", {}):
         pending = data["pending"][user_id]
         if pending.get("step") == "waiting_otp":
@@ -531,7 +629,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
     
-    # Check if user is in QR pending
     if user_id in data.get("pending_qr", {}):
         await update.message.reply_text(
             "📱 **QR PENDING**\n\n"
@@ -541,7 +638,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check if user is in Review pending
     if user_id in data.get("pending_review", {}):
         await update.message.reply_text(
             "📝 **REVIEW PENDING**\n\n"
@@ -551,7 +647,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Default response
     await update.message.reply_text(
         "❌ **Unknown command**\n\n"
         "📌 Available commands:\n"
@@ -811,7 +906,7 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for req in data.get("withdraw_requests", []):
         if req["user_id"] == target_id and req["amount"] == amount and req["status"] == "pending":
             req["status"] = "approved"
-            req["approved_at"] = datetime.now().isoformat()
+            req["approved_at"] = get_ist_now().isoformat()
             break
     save_data(data)
     
@@ -891,7 +986,7 @@ async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Minimum ₹15!", parse_mode='Markdown')
         return
     
-    withdraw_data = {"user_id": user_id, "username": update.effective_user.first_name, "upi": upi, "amount": amount, "timestamp": datetime.now().isoformat(), "status": "pending"}
+    withdraw_data = {"user_id": user_id, "username": update.effective_user.first_name, "upi": upi, "amount": amount, "timestamp": get_ist_now().isoformat(), "status": "pending"}
     if "withdraw_requests" not in data:
         data["withdraw_requests"] = []
     data["withdraw_requests"].append(withdraw_data)
@@ -932,7 +1027,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in data["pending"]:
         pending = data["pending"][user_id]
         start_time = datetime.fromisoformat(pending["timestamp"])
-        elapsed = (datetime.now() - start_time).seconds // 60
+        if start_time.tzinfo is None:
+            start_time = IST.localize(start_time)
+        elapsed = (get_ist_now() - start_time).seconds // 60
         remaining = max(0, TASK_TIMEOUT_MINUTES - elapsed)
         await update.message.reply_text(
             f"⏳ **PENDING**\n📧 `{pending.get('gmail', '')}`\n⏰ Time Left: {remaining} min",
@@ -943,7 +1040,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in data.get("pending_qr", {}):
         pending = data["pending_qr"][user_id]
         start_time = datetime.fromisoformat(pending["timestamp"])
-        elapsed = (datetime.now() - start_time).seconds // 60
+        if start_time.tzinfo is None:
+            start_time = IST.localize(start_time)
+        elapsed = (get_ist_now() - start_time).seconds // 60
         remaining = max(0, QR_EXPIRE_MINUTES - elapsed)
         await update.message.reply_text(
             f"⏳ **QR PENDING**\n📱 QR assigned\n⏰ Expires in: {remaining} min",
@@ -954,7 +1053,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in data.get("pending_review", {}):
         pending = data["pending_review"][user_id]
         start_time = datetime.fromisoformat(pending["timestamp"])
-        elapsed = (datetime.now() - start_time).seconds // 60
+        if start_time.tzinfo is None:
+            start_time = IST.localize(start_time)
+        elapsed = (get_ist_now() - start_time).seconds // 60
         remaining = max(0, REVIEW_EXPIRE_MINUTES - elapsed)
         await update.message.reply_text(
             f"⏳ **REVIEW PENDING**\n📝 Review assigned\n⏰ Expires in: {remaining} min",
@@ -993,7 +1094,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/withdraw [amount] - Withdraw\n"
         "/setupi [UPI] - Set UPI\n"
         "/cancel - Cancel current\n"
-        "/help - This help\n"
+        "/help - This help\n\n"
+        "⏰ **Bot Timings:**\n"
+        "🟢 8 AM - 10 PM IST (Online)\n"
+        "🔴 10 PM - 8 AM IST (Maintenance)\n"
     )
     
     if is_admin_user:
@@ -1020,7 +1124,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(user.id)
     
     if is_maintenance_mode():
-        await update.message.reply_text("🛠️ Maintenance Mode (10 PM - 10 AM IST).", parse_mode='Markdown')
+        next_start = get_next_start_time()
+        if next_start:
+            time_str = next_start.strftime('%I:%M %p')
+            await update.message.reply_text(
+                f"🛠️ **MAINTENANCE MODE**\n\n"
+                f"Bot is currently in maintenance.\n"
+                f"⏰ **Timing:** 10 PM - 8 AM IST\n"
+                f"🔄 Bot will be back at **{time_str}**\n\n"
+                f"⏳ Time remaining: {(next_start - get_ist_now()).seconds // 60} minutes\n\n"
+                f"Please try again later!",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                "🛠️ **MAINTENANCE MODE**\n\n"
+                "Bot is currently in maintenance.\n"
+                "⏰ **Timing:** 10 PM - 8 AM IST\n\n"
+                "Please try again after 8 AM!",
+                parse_mode='Markdown'
+            )
         return
     
     if user_id not in data["users"]:
@@ -1033,6 +1156,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/email - Email verification\n"
         "/qr - QR verification\n"
         "/revive - Review work\n\n"
+        f"⏰ **Timings:** 8 AM - 10 PM IST\n"
         f"👑 Admin: {ESCROW_USER}",
         parse_mode='Markdown'
     )
@@ -1078,7 +1202,7 @@ def main():
     app.add_handler(CommandHandler("approve", approve_command))
     app.add_handler(CommandHandler("newadmin", newadmin_command))
     app.add_handler(CommandHandler("reset", reset_all_command))
-    app.add_handler(CommandHandler("cancel", cancel_upload_command))  # Overload for admin
+    app.add_handler(CommandHandler("cancel", cancel_upload_command))
     
     # Message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -1099,6 +1223,8 @@ def main():
     print(f"📦 Email: {len(data['email_stock'])}/{MAX_EMAIL_UPLOAD}")
     print(f"📱 QR: {len(data['qr_stock'])}/{MAX_QR_UPLOAD}")
     print(f"📝 Review: {len(data['review_stock'])}")
+    print(f"⏰ Bot Timings: 8 AM - 10 PM IST")
+    print(f"🔴 Maintenance: 10 PM - 8 AM IST")
     
     app.run_polling()
 
