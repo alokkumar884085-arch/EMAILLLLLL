@@ -17,7 +17,7 @@ OWNER_ID = 8785590284
 ESCROW_USER = "@escrow2929"
 
 # ============ ADMIN LIST ============
-ADMINS = [OWNER_ID]  # Owner + extra admins
+ADMINS = [OWNER_ID]
 
 # ============ TIME CONFIGURATION ============
 MAINTENANCE_START = 22
@@ -33,9 +33,14 @@ def load_data():
         try:
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                for key in ["email_stock", "used_emails", "users", "pending", "withdraw_requests", "cooldowns", "admins"]:
+                for key in ["email_stock", "used_emails", "users", "pending", "withdraw_requests", "cooldowns", "admins", "upload_counter", "upload_history"]:
                     if key not in data:
-                        data[key] = {} if key in ["users", "pending", "cooldowns"] else []
+                        if key in ["users", "pending", "cooldowns"]:
+                            data[key] = {}
+                        elif key == "upload_counter":
+                            data[key] = 0
+                        else:
+                            data[key] = []
                 return data
         except Exception as e:
             logging.error(f"Error loading data: {e}")
@@ -50,7 +55,9 @@ def default_data():
         "used_emails": [],
         "withdraw_requests": [],
         "cooldowns": {},
-        "admins": [OWNER_ID]
+        "admins": [OWNER_ID],
+        "upload_counter": 0,
+        "upload_history": []  # [{id: 1, email: "...", status: "pending/approved/cancelled"}]
     }
 
 def save_data(data):
@@ -76,14 +83,12 @@ def is_maintenance_mode():
     return now.hour >= MAINTENANCE_START or now.hour < MAINTENANCE_END
 
 def is_admin(user_id):
-    """Check if user is admin or owner"""
     return user_id in ADMINS or user_id == OWNER_ID
 
-# ============ SELF PING - SIRF OWNER KO (HAR 5 MINUTE) ============
+# ============ SELF PING ============
 PING_COUNT = 0
 
 async def self_ping(context: ContextTypes.DEFAULT_TYPE):
-    """Self ping every 5 minutes - sirf owner ko"""
     global PING_COUNT, data
     PING_COUNT += 1
     data = load_data()
@@ -96,10 +101,10 @@ async def self_ping(context: ContextTypes.DEFAULT_TYPE):
                  f"📦 Stock: {len(data['email_stock'])}\n"
                  f"👥 Users: {len(data['users'])}\n"
                  f"⏳ Pending: {len(data['pending'])}\n"
-                 f"👑 Admins: {len(ADMINS)}\n"
-                 f"📊 Ping #{PING_COUNT}"
+                 f"📊 Uploads: {data.get('upload_counter', 0)}\n"
+                 f"📋 History: {len(data.get('upload_history', []))}"
         )
-        logger.info(f"Self ping #{PING_COUNT} sent to owner")
+        logger.info(f"Self ping #{PING_COUNT} sent")
     except Exception as e:
         logger.error(f"Self ping failed: {e}")
 
@@ -124,7 +129,6 @@ def check_pending_timeout():
         data["cooldowns"][user_id] = (datetime.now() + timedelta(minutes=COOLDOWN_MINUTES)).isoformat()
         del data["pending"][user_id]
         save_data(data)
-        logger.info(f"Task timeout for user {user_id}")
 
 async def check_timeout_job(context: ContextTypes.DEFAULT_TYPE):
     global data
@@ -132,9 +136,58 @@ async def check_timeout_job(context: ContextTypes.DEFAULT_TYPE):
     if data["pending"]:
         check_pending_timeout()
 
+# ============ UPLOAD TRACKING FUNCTIONS ============
+def add_upload_to_history(email_data, status="pending"):
+    """Add upload to history with unique ID"""
+    global data
+    data["upload_counter"] = data.get("upload_counter", 0) + 1
+    upload_id = data["upload_counter"]
+    
+    # Parse email data
+    parts = email_data.split("|")
+    if len(parts) == 4:
+        name, email, password, recovery = parts
+    else:
+        email, password, recovery = parts[0], parts[1], parts[2]
+        name = "Unknown"
+    
+    data["upload_history"].append({
+        "id": upload_id,
+        "name": name,
+        "email": email,
+        "password": password,
+        "recovery": recovery,
+        "raw": email_data,
+        "status": status,
+        "timestamp": datetime.now().isoformat(),
+        "assigned_to": None,
+        "approved_by": None
+    })
+    save_data(data)
+    return upload_id
+
+def get_upload_by_id(upload_id):
+    """Get upload by ID"""
+    global data
+    for upload in data.get("upload_history", []):
+        if upload["id"] == upload_id:
+            return upload
+    return None
+
+def update_upload_status(upload_id, status, extra=None):
+    """Update upload status"""
+    global data
+    for upload in data.get("upload_history", []):
+        if upload["id"] == upload_id:
+            upload["status"] = status
+            if extra:
+                upload.update(extra)
+            save_data(data)
+            return True
+    return False
+
 # ============ NEW ADMIN COMMAND ============
 async def newadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add new admin (Owner only)"""
     global data, ADMINS
     
     user_id = update.effective_user.id
@@ -147,8 +200,7 @@ async def newadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "👑 **ADD NEW ADMIN**\n\n"
             "Usage: `/newadmin [user_id]`\n\n"
-            "Example: `/newadmin 123456789`\n\n"
-            f"Current Admins: {ADMINS}",
+            "Example: `/newadmin 123456789`",
             parse_mode='Markdown'
         )
         return
@@ -156,7 +208,7 @@ async def newadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         new_admin_id = int(context.args[0])
     except:
-        await update.message.reply_text("❌ Invalid User ID! Must be a number.", parse_mode='Markdown')
+        await update.message.reply_text("❌ Invalid User ID!", parse_mode='Markdown')
         return
     
     if new_admin_id in ADMINS:
@@ -167,34 +219,19 @@ async def newadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["admins"] = ADMINS
     save_data(data)
     
-    await update.message.reply_text(
-        f"✅ **NEW ADMIN ADDED!**\n\n"
-        f"👑 User ID: `{new_admin_id}`\n"
-        f"📋 Total Admins: {len(ADMINS)}\n\n"
-        f"New admin can now use `/upload`, `/stock`, `/approve` commands.",
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text(f"✅ **NEW ADMIN ADDED!**\n\n👑 User ID: `{new_admin_id}`", parse_mode='Markdown')
     
-    # Notify new admin
     try:
         await context.bot.send_message(
             chat_id=new_admin_id,
-            text=f"👑 **You are now an Admin!**\n\n"
-                 f"You can use admin commands:\n"
-                 f"/upload - Add email stock\n"
-                 f"/stock - Check stock\n"
-                 f"/approve - Approve withdrawals",
+            text=f"👑 **You are now an Admin!**\n\nYou can use admin commands:\n/upload - Add stock\n/stock - Check stock\n/approve - Approve withdrawals\n/cancel #id - Cancel upload",
             parse_mode='Markdown'
         )
     except:
         pass
-    
-    logger.info(f"New admin added: {new_admin_id}")
 
-# ============ ADMIN COMMANDS (Now accessible to all admins) ============
-
+# ============ UPLOAD COMMAND WITH TRACKING ============
 async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Upload email stock (Admins + Owner)"""
     global data
     
     user_id = update.effective_user.id
@@ -209,33 +246,142 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/upload Name|Email|Pass|Recovery\n\n"
             "Multiple:\n"
             "/upload Name1|Email1|Pass1|Rec1,Name2|Email2|Pass2|Rec2\n\n"
-            f"📦 Current Stock: {len(data['email_stock'])}",
+            f"📦 Current Stock: {len(data['email_stock'])}\n"
+            f"📊 Total Uploads: {data.get('upload_counter', 0)}",
             parse_mode='Markdown'
         )
         return
     
     emails = context.args[0].split(",")
     count = 0
+    uploaded_ids = []
+    
     for email in emails:
         email = email.strip()
         if "|" in email:
             parts = email.split("|")
             if len(parts) >= 3:
+                # Add to stock
                 data["email_stock"].append(email)
+                
+                # Add to history with ID
+                upload_id = add_upload_to_history(email, "pending")
+                uploaded_ids.append(upload_id)
                 count += 1
     
     save_data(data)
     data = load_data()
     
+    # Build response message
+    response = f"✅ **UPLOAD COMPLETE!**\n\n"
+    response += f"📤 Added: {count} emails\n"
+    response += f"📦 Total Stock: {len(data['email_stock'])}\n"
+    response += f"📊 Upload #: {data.get('upload_counter', 0)}\n\n"
+    
+    for uid in uploaded_ids:
+        upload = get_upload_by_id(uid)
+        if upload:
+            response += f"#️⃣ `#{upload['id']}` - {upload['email']} - ✅ Done\n"
+    
+    response += f"\n📌 To cancel: `/cancel #{uploaded_ids[0]}` (if single)"
+    
+    await update.message.reply_text(response, parse_mode='Markdown')
+
+# ============ CANCEL UPLOAD COMMAND ============
+async def cancel_upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel a specific upload by ID"""
+    global data
+    
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ **Unauthorized!**", parse_mode='Markdown')
+        return
+    
+    if len(context.args) < 1:
+        await update.message.reply_text(
+            "❌ **Usage:** `/cancel #upload_id`\n\n"
+            "Example: `/cancel #1`\n\n"
+            "To see all uploads: `/uploads`",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Extract ID from #1 or 1
+    upload_arg = context.args[0].replace("#", "").strip()
+    try:
+        upload_id = int(upload_arg)
+    except:
+        await update.message.reply_text("❌ Invalid ID! Use: `/cancel #1`", parse_mode='Markdown')
+        return
+    
+    # Find upload
+    upload = get_upload_by_id(upload_id)
+    if not upload:
+        await update.message.reply_text(f"❌ Upload `#{upload_id}` not found!", parse_mode='Markdown')
+        return
+    
+    if upload["status"] == "approved":
+        await update.message.reply_text(f"❌ Upload `#{upload_id}` already approved and removed!", parse_mode='Markdown')
+        return
+    
+    # Remove from stock
+    raw = upload["raw"]
+    if raw in data["email_stock"]:
+        data["email_stock"].remove(raw)
+    
+    # Update status
+    update_upload_status(upload_id, "cancelled", {"cancelled_by": user_id, "cancelled_at": datetime.now().isoformat()})
+    
     await update.message.reply_text(
-        f"✅ **EMAIL STOCK UPDATED!**\n\n"
-        f"📤 Added: {count}\n"
-        f"📦 Total Stock: {len(data['email_stock'])}",
+        f"✅ **UPLOAD CANCELLED!**\n\n"
+        f"#️⃣ `#{upload_id}` - {upload['email']}\n"
+        f"📌 Status: Cancelled\n"
+        f"📦 Stock Left: {len(data['email_stock'])}",
         parse_mode='Markdown'
     )
 
-async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check stock (Admins + Owner)"""
+# ============ RESET ALL UPLOADS ============
+async def reset_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reset all uploads (Owner only)"""
+    global data
+    
+    user_id = update.effective_user.id
+    
+    if user_id != OWNER_ID:
+        await update.message.reply_text("❌ **Only Owner can reset all uploads!**", parse_mode='Markdown')
+        return
+    
+    # Confirmation
+    if len(context.args) < 1 or context.args[0].lower() != "confirm":
+        await update.message.reply_text(
+            "⚠️ **RESET ALL UPLOADS?**\n\n"
+            f"This will delete:\n"
+            f"📦 {len(data['email_stock'])} stock items\n"
+            f"📊 {data.get('upload_counter', 0)} upload records\n"
+            f"📋 {len(data.get('upload_history', []))} history entries\n\n"
+            f"Type: `/reset all confirm` to confirm.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Reset
+    data["email_stock"] = []
+    data["upload_counter"] = 0
+    data["upload_history"] = []
+    save_data(data)
+    
+    await update.message.reply_text(
+        "✅ **ALL UPLOADS RESET!**\n\n"
+        f"📦 Stock: 0\n"
+        f"📊 Uploads: 0\n"
+        f"📋 History: 0",
+        parse_mode='Markdown'
+    )
+
+# ============ VIEW UPLOADS COMMAND ============
+async def uploads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View all uploads"""
     global data
     
     user_id = update.effective_user.id
@@ -245,20 +391,28 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     data = load_data()
+    history = data.get("upload_history", [])
     
-    await update.message.reply_text(
-        f"📊 **STOCK STATUS**\n\n"
-        f"📦 Available: {len(data['email_stock'])}\n"
-        f"✅ Used: {len(data['used_emails'])}\n"
-        f"⏳ Pending: {len(data['pending'])}\n"
-        f"👥 Total Users: {len(data['users'])}\n"
-        f"👑 Admins: {len(ADMINS)}\n"
-        f"📌 Status: {'✅ Active' if data['email_stock'] else '⚠️ Empty'}",
-        parse_mode='Markdown'
-    )
+    if not history:
+        await update.message.reply_text("📋 No uploads found.", parse_mode='Markdown')
+        return
+    
+    # Show recent 20 uploads
+    recent = history[-20:] if len(history) > 20 else history
+    response = "📋 **UPLOAD HISTORY**\n\n"
+    
+    for upload in reversed(recent):
+        status_emoji = "✅" if upload["status"] == "approved" else "⏳" if upload["status"] == "pending" else "❌"
+        response += f"#{upload['id']} {status_emoji} {upload['email']} - {upload['status']}\n"
+    
+    response += f"\n📊 Total: {len(history)} | Stock: {len(data['email_stock'])}"
+    response += f"\n📌 `/cancel #id` to cancel | `/reset all` to reset all"
+    
+    await update.message.reply_text(response, parse_mode='Markdown')
 
+# ============ APPROVE COMMAND WITH AUTO-REMOVE ============
 async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Approve withdrawal (Admins + Owner)"""
+    """Approve withdrawal and auto-remove"""
     global data
     
     user_id = update.effective_user.id
@@ -270,7 +424,8 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
         await update.message.reply_text(
             "Usage: `/approve [user_id] [amount]`\n\n"
-            "Example: `/approve 123456789 15`",
+            "Example: `/approve 123456789 15`\n\n"
+            "⚠️ This will auto-remove the upload from stock.",
             parse_mode='Markdown'
         )
         return
@@ -284,6 +439,17 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ User `{target_id}` not found.", parse_mode='Markdown')
         return
     
+    # Find user's email and mark as approved
+    user_email = data["users"][target_id].get("gmail")
+    
+    # Update upload status to approved
+    for upload in data.get("upload_history", []):
+        if upload["email"] == user_email and upload["status"] == "pending":
+            update_upload_status(upload["id"], "approved", {"approved_by": user_id, "approved_at": datetime.now().isoformat()})
+            await update.message.reply_text(f"✅ Upload `#{upload['id']}` approved and removed from stock!", parse_mode='Markdown')
+            break
+    
+    # Deduct balance
     data["users"][target_id]["balance"] -= amount
     for req in data.get("withdraw_requests", []):
         if req["user_id"] == target_id and req["amount"] == amount and req["status"] == "pending":
@@ -294,7 +460,7 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await context.bot.send_message(
         int(target_id), 
-        f"💰 **WITHDRAWAL APPROVED!**\n\n✅ ₹{amount} has been sent to your UPI.", 
+        f"💰 **WITHDRAWAL APPROVED!**\n\n✅ ₹{amount} sent to your UPI.", 
         parse_mode='Markdown'
     )
     await update.message.reply_text(f"✅ Approved ₹{amount} for `{target_id}`", parse_mode='Markdown')
@@ -375,7 +541,6 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     save_data(data)
     
-    # Send to all admins
     for admin in ADMINS:
         try:
             await context.bot.send_message(
@@ -388,7 +553,6 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     
-    # Send to user
     await update.message.reply_text(
         f"📧 **GMAIL ASSIGNED!**\n\n"
         f"👤 Name: `{name}`\n"
@@ -400,6 +564,8 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/skip2fa - Skip 2FA\n/cancel - Cancel",
         parse_mode='Markdown'
     )
+
+# ============ OTHER COMMANDS (shortened for space) ============
 
 async def skip2fa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
@@ -489,7 +655,6 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del data["pending"][user_id]
     save_data(data)
     
-    # Send to all admins
     for admin in ADMINS:
         try:
             await context.bot.send_message(
@@ -634,12 +799,41 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin_user:
         help_text += (
             "\n**Admin Commands:**\n"
-            "/upload Name|Email|Pass|Rec - Add stock\n/stock - Check stock\n/approve [user_id] [amount] - Approve withdrawal\n/newadmin [user_id] - Add new admin (Owner only)\n"
+            "/upload Name|Email|Pass|Rec - Add stock\n/stock - Check stock\n/uploads - View all uploads\n/cancel #id - Cancel upload\n/reset all - Reset all uploads\n/approve [user_id] [amount] - Approve withdrawal\n/newadmin [user_id] - Add new admin (Owner only)\n"
         )
     
     help_text += f"\n👑 Admin: {ESCROW_USER}"
     
     await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global data
+    
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ **Unauthorized!**", parse_mode='Markdown')
+        return
+    
+    data = load_data()
+    
+    # Count pending and approved uploads
+    pending_uploads = len([u for u in data.get("upload_history", []) if u["status"] == "pending"])
+    approved_uploads = len([u for u in data.get("upload_history", []) if u["status"] == "approved"])
+    
+    await update.message.reply_text(
+        f"📊 **STOCK STATUS**\n\n"
+        f"📦 Available: {len(data['email_stock'])}\n"
+        f"✅ Used: {len(data['used_emails'])}\n"
+        f"⏳ Pending: {len(data['pending'])}\n"
+        f"👥 Total Users: {len(data['users'])}\n"
+        f"📊 Uploads: {data.get('upload_counter', 0)}\n"
+        f"⏳ Pending Uploads: {pending_uploads}\n"
+        f"✅ Approved Uploads: {approved_uploads}\n"
+        f"👑 Admins: {len(ADMINS)}\n"
+        f"📌 Status: {'✅ Active' if data['email_stock'] else '⚠️ Empty'}",
+        parse_mode='Markdown'
+    )
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {context.error}")
@@ -650,7 +844,6 @@ def main():
     data = load_data()
     ADMINS = data.get("admins", [OWNER_ID])
     
-    # Timeout fix
     request = HTTPXRequest(
         connect_timeout=60.0,
         read_timeout=60.0,
@@ -674,8 +867,11 @@ def main():
     # Admin commands
     app.add_handler(CommandHandler("upload", upload_command))
     app.add_handler(CommandHandler("stock", stock_command))
+    app.add_handler(CommandHandler("uploads", uploads_command))
+    app.add_handler(CommandHandler("cancel", cancel_upload_command))  # Overload for admin
+    app.add_handler(CommandHandler("reset", reset_all_command))
     app.add_handler(CommandHandler("approve", approve_command))
-    app.add_handler(CommandHandler("newadmin", newadmin_command))  # Owner only
+    app.add_handler(CommandHandler("newadmin", newadmin_command))
     
     # Message handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -687,9 +883,7 @@ def main():
     # Job Queue
     job_queue = app.job_queue
     if job_queue:
-        # Self ping har 5 minute (300 seconds)
         job_queue.run_repeating(self_ping, interval=300, first=30)
-        # Timeout check har 1 minute
         job_queue.run_repeating(check_timeout_job, interval=60, first=60)
         print("🔄 Self ping scheduled (every 5 minutes)")
         print("⏰ Timeout check scheduled (every minute)")
@@ -698,7 +892,7 @@ def main():
     print(f"👑 Owner ID: {OWNER_ID}")
     print(f"👥 Admins: {ADMINS}")
     print(f"📦 Stock: {len(data['email_stock'])}")
-    print(f"🔄 Maintenance: {MAINTENANCE_START}:00 - {MAINTENANCE_END}:00 IST")
+    print(f"📊 Uploads: {data.get('upload_counter', 0)}")
     
     app.run_polling()
 
