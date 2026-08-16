@@ -13,7 +13,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from telegram.request import HTTPXRequest
 
 # ============ CONFIGURATION ============
-TOKEN = "8875994072:AAFEw8QGWPrfIOw6SGoVo6H-bk3ioLI9uEk"
+TOKEN = "8875994072:AAHvMVH5BSb2VGfmAOa-Q8lF1yHPZcTCz3w"
 OWNER_ID = 8785590284
 ESCROW_USER = "@escrow2929"
 
