@@ -124,8 +124,6 @@ def is_admin(user_id):
     return user_id in ADMINS or user_id == OWNER_ID
 
 def get_admin_name(user_id):
-    """Get admin's username or name"""
-    # Try to get from database
     for admin in ADMINS:
         if admin == user_id:
             return "Owner" if user_id == OWNER_ID else f"Admin_{user_id}"
@@ -251,10 +249,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if len(context.args) < 1:
         await update.message.reply_text(
-            "📢 **BROADCAST**\n\n"
-            "Usage: `/broadcast [message]`\n\n"
-            "Example:\n"
-            "/broadcast Hello everyone!",
+            "📢 **BROADCAST**\n\nUsage: `/broadcast [message]`",
             parse_mode='Markdown'
         )
         return
@@ -321,7 +316,7 @@ async def newadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data(data)
     await update.message.reply_text(f"✅ New admin added: `{new_admin_id}`", parse_mode='Markdown')
 
-# ============ UPLOAD EMAIL (WITH UPLOADER NAME) ============
+# ============ UPLOAD EMAIL ============
 async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     user_id = update.effective_user.id
@@ -360,7 +355,6 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if recovery == "skip":
                     recovery = "No Recovery"
                 
-                # ✅ STORE WITH UPLOADER NAME
                 processed_email = f"{name}|{gmail}|{password}|{recovery}|uploaded_by_{admin_username}"
                 data["email_stock"].append(processed_email)
                 data["upload_counter"] = data.get("upload_counter", 0) + 1
@@ -385,7 +379,7 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-# ============ UPLOAD QR (WITH UPLOADER NAME) ============
+# ============ UPLOAD QR ============
 async def uploadqr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     user_id = update.effective_user.id
@@ -406,7 +400,6 @@ async def uploadqr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     qr_data = " ".join(context.args)
-    # ✅ STORE WITH UPLOADER NAME
     processed_qr = f"{qr_data}|uploaded_by_{admin_username}"
     data["qr_stock"].append(processed_qr)
     data["qr_upload_counter"] = data.get("qr_upload_counter", 0) + 1
@@ -423,7 +416,7 @@ async def uploadqr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-# ============ UPLOAD REVIEW (WITH UPLOADER NAME) ============
+# ============ UPLOAD REVIEW ============
 async def uploadr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     user_id = update.effective_user.id
@@ -441,7 +434,6 @@ async def uploadr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     review_data = " ".join(context.args)
-    # ✅ STORE WITH UPLOADER NAME
     processed_review = f"{review_data}|uploaded_by_{admin_username}"
     data["review_stock"].append(processed_review)
     data["review_upload_counter"] = data.get("review_upload_counter", 0) + 1
@@ -458,7 +450,7 @@ async def uploadr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-# ============ EMAIL COMMAND (SHOW UPLOADER NAME) ============
+# ============ EMAIL COMMAND ============
 async def email_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     data = load_data()
@@ -508,11 +500,9 @@ async def email_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     email_data = data["email_stock"].pop(0)
     parts = email_data.split("|")
     
-    # ✅ Extract uploader name from last part
     uploaded_by = "Unknown Admin"
     if len(parts) >= 5 and parts[4].startswith("uploaded_by_"):
         uploaded_by = parts[4].replace("uploaded_by_", "")
-        # Remove uploader part for actual data
         email_data_clean = "|".join(parts[:4])
     else:
         email_data_clean = email_data
@@ -552,21 +542,20 @@ async def email_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     
-    # ✅ Show uploaded_by in user message
     await update.message.reply_text(
         f"📧 **EMAIL ASSIGNED!**\n\n"
         f"👤 Name: `{name}`\n"
         f"📧 Email: `{gmail}`\n"
         f"🔑 Pass: `{password}`\n"
         f"📧 Recovery: `{recovery}`\n"
-        f"👑 Uploaded by: @{uploaded_by}\n\n"  # ✅ UPLOADER NAME SHOW
+        f"👑 Uploaded by: @{uploaded_by}\n\n"
         "📌 Login → /skip2fa → Upload QR → OTP → Screenshot\n\n"
         f"⏰ {TASK_TIMEOUT_MINUTES} min timeout!\n"
         "/cancel - Cancel",
         parse_mode='Markdown'
     )
 
-# ============ QR COMMAND (SHOW UPLOADER NAME) ============
+# ============ QR COMMAND ============
 async def qr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     data = load_data()
@@ -593,7 +582,6 @@ async def qr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     qr_data = data["qr_stock"].pop(0)
     parts = qr_data.split("|")
     
-    # ✅ Extract uploader name
     uploaded_by = "Unknown Admin"
     if len(parts) >= 2 and parts[-1].startswith("uploaded_by_"):
         uploaded_by = parts[-1].replace("uploaded_by_", "")
@@ -610,18 +598,17 @@ async def qr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     save_data(data)
     
-    # ✅ Show uploaded_by in user message
     await update.message.reply_text(
         f"📱 **YOUR QR CODE**\n\n"
         f"`{qr_clean}`\n\n"
         f"💰 **1 QR = ₹15**\n"
-        f"👑 Uploaded by: @{uploaded_by}\n\n"  # ✅ UPLOADER NAME SHOW
+        f"👑 Uploaded by: @{uploaded_by}\n\n"
         f"📸 Send screenshot proof\n"
         f"⏰ Expires in {QR_EXPIRE_MINUTES} minutes!",
         parse_mode='Markdown'
     )
 
-# ============ REVIVE COMMAND (SHOW UPLOADER NAME) ============
+# ============ REVIVE COMMAND ============
 async def revive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     data = load_data()
@@ -648,7 +635,6 @@ async def revive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     review_data = data["review_stock"].pop(0)
     parts = review_data.split("|")
     
-    # ✅ Extract uploader name
     uploaded_by = "Unknown Admin"
     if len(parts) >= 2 and parts[-1].startswith("uploaded_by_"):
         uploaded_by = parts[-1].replace("uploaded_by_", "")
@@ -665,12 +651,11 @@ async def revive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     save_data(data)
     
-    # ✅ Show uploaded_by in user message
     await update.message.reply_text(
         f"📝 **REVIEW WORK**\n\n"
         f"`{review_clean}`\n\n"
         f"📸 Send screenshot proof\n"
-        f"👑 Uploaded by: @{uploaded_by}\n\n"  # ✅ UPLOADER NAME SHOW
+        f"👑 Uploaded by: @{uploaded_by}\n\n"
         f"⏰ Expires in {REVIEW_EXPIRE_MINUTES} minutes!",
         parse_mode='Markdown'
     )
@@ -736,7 +721,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         if pending.get("type") == "email":
-            # ✅ Show pending work with uploader name
             await update.message.reply_text(
                 f"📧 **EMAIL WORK**\n\n"
                 f"👤 Name: `{pending.get('name', '')}`\n"
