@@ -7,26 +7,10 @@ import json
 import os
 import asyncio
 import pytz
-import threading
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.request import HTTPXRequest
-from flask import Flask
-
-# ============ FLASK WEB SERVER (KEEP ALIVE) ============
-flask_app = Flask(__name__)
-
-@flask_app.route('/')
-def home():
-    return "🟢 Bot is alive and running!"
-
-@flask_app.route('/ping')
-def ping():
-    return "PONG"
-
-def run_flask():
-    flask_app.run(host='0.0.0.0', port=10000)
 
 # ============ CONFIGURATION ============
 TOKEN = "8875994072:AAFAgBRvDOmw1KrZZ0Ku0hW5h8nbA0otcKw"
@@ -38,6 +22,7 @@ ADMINS = [OWNER_ID]
 # ============ TIME CONFIGURATION ============
 MAINTENANCE_START_HOUR = 22
 MAINTENANCE_END_HOUR = 8
+MAINTENANCE_MANUAL = False
 
 # ============ LIMITS ============
 MAX_EMAIL_UPLOAD = 1000
@@ -58,6 +43,9 @@ def get_ist_now():
     return datetime.now(IST)
 
 def is_maintenance_mode():
+    global MAINTENANCE_MANUAL
+    if MAINTENANCE_MANUAL:
+        return True
     now = get_ist_now()
     current_hour = now.hour
     if current_hour >= MAINTENANCE_START_HOUR or current_hour < MAINTENANCE_END_HOUR:
@@ -134,6 +122,14 @@ logger = logging.getLogger(__name__)
 
 def is_admin(user_id):
     return user_id in ADMINS or user_id == OWNER_ID
+
+def get_admin_name(user_id):
+    """Get admin's username or name"""
+    # Try to get from database
+    for admin in ADMINS:
+        if admin == user_id:
+            return "Owner" if user_id == OWNER_ID else f"Admin_{user_id}"
+    return f"Admin_{user_id}"
 
 # ============ SELF PING ============
 PING_COUNT = 0
@@ -247,12 +243,67 @@ async def check_review_expire_job(context: ContextTypes.DEFAULT_TYPE):
     if data.get("pending_review"):
         check_review_expire()
 
+# ============ BROADCAST ============
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
+        return
+    if len(context.args) < 1:
+        await update.message.reply_text(
+            "📢 **BROADCAST**\n\n"
+            "Usage: `/broadcast [message]`\n\n"
+            "Example:\n"
+            "/broadcast Hello everyone!",
+            parse_mode='Markdown'
+        )
+        return
+    message = " ".join(context.args)
+    data = load_data()
+    users = data.get("users", {})
+    if not users:
+        await update.message.reply_text("❌ No users found!", parse_mode='Markdown')
+        return
+    sent = 0
+    failed = 0
+    for uid in users.keys():
+        try:
+            await context.bot.send_message(
+                int(uid),
+                f"📢 **ANNOUNCEMENT**\n\n{message}\n\n👑 Admin: {ESCROW_USER}",
+                parse_mode='Markdown'
+            )
+            sent += 1
+        except:
+            failed += 1
+    await update.message.reply_text(
+        f"✅ **BROADCAST SENT!**\n\n📤 Sent: {sent}\n❌ Failed: {failed}\n👥 Total Users: {len(users)}",
+        parse_mode='Markdown'
+    )
+
+# ============ MAINTENANCE ON/OFF ============
+async def mainon_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global MAINTENANCE_MANUAL
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("❌ Only Owner!", parse_mode='Markdown')
+        return
+    MAINTENANCE_MANUAL = True
+    await update.message.reply_text("🛠️ **MAINTENANCE MODE ON**", parse_mode='Markdown')
+
+async def mainoff_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global MAINTENANCE_MANUAL
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("❌ Only Owner!", parse_mode='Markdown')
+        return
+    MAINTENANCE_MANUAL = False
+    await update.message.reply_text("✅ **MAINTENANCE MODE OFF**", parse_mode='Markdown')
+
 # ============ NEW ADMIN ============
 async def newadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data, ADMINS
     user_id = update.effective_user.id
     if user_id != OWNER_ID:
-        await update.message.reply_text("❌ Only Owner can add admins!", parse_mode='Markdown')
+        await update.message.reply_text("❌ Only Owner!", parse_mode='Markdown')
         return
     if len(context.args) < 1:
         await update.message.reply_text("Usage: `/newadmin [user_id]`", parse_mode='Markdown')
@@ -269,15 +320,13 @@ async def newadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["admins"] = ADMINS
     save_data(data)
     await update.message.reply_text(f"✅ New admin added: `{new_admin_id}`", parse_mode='Markdown')
-    try:
-        await context.bot.send_message(new_admin_id, "👑 You are now an Admin!", parse_mode='Markdown')
-    except:
-        pass
 
-# ============ UPLOAD EMAIL ============
+# ============ UPLOAD EMAIL (WITH UPLOADER NAME) ============
 async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     user_id = update.effective_user.id
+    admin_username = update.effective_user.username or update.effective_user.first_name
+    
     if not is_admin(user_id):
         await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
         return
@@ -287,8 +336,6 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/upload Name|Email|Pass|Recovery\n\n"
             "💡 Use 'skip' for no recovery:\n"
             "/upload Name|Email|Pass|skip\n\n"
-            "Multiple:\n"
-            "/upload Name1|Email1|Pass1|Rec1,Name2|Email2|Pass2|skip\n\n"
             f"📦 Stock: {len(data['email_stock'])}/{MAX_EMAIL_UPLOAD}",
             parse_mode='Markdown'
         )
@@ -313,12 +360,14 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if recovery == "skip":
                     recovery = "No Recovery"
                 
-                processed_email = f"{name}|{gmail}|{password}|{recovery}"
+                # ✅ STORE WITH UPLOADER NAME
+                processed_email = f"{name}|{gmail}|{password}|{recovery}|uploaded_by_{admin_username}"
                 data["email_stock"].append(processed_email)
                 data["upload_counter"] = data.get("upload_counter", 0) + 1
                 data["upload_history"].append({
                     "id": data["upload_counter"], 
                     "raw": processed_email,
+                    "uploaded_by": admin_username,
                     "status": "pending", 
                     "timestamp": get_ist_now().isoformat()
                 })
@@ -326,21 +375,22 @@ async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text(
                     f"❌ Invalid format: {email}\n\n"
-                    "Use: Name|Email|Pass|Recovery\n"
-                    "Or: Name|Email|Pass|skip",
+                    "Use: Name|Email|Pass|Recovery",
                     parse_mode='Markdown'
                 )
                 return
     save_data(data)
     await update.message.reply_text(
-        f"✅ **EMAIL UPLOADED!**\n\n📤 Added: {count}\n📦 Total: {len(data['email_stock'])}/{MAX_EMAIL_UPLOAD}",
+        f"✅ **EMAIL UPLOADED!**\n\n📤 Added: {count}\n📦 Total: {len(data['email_stock'])}/{MAX_EMAIL_UPLOAD}\n👤 Uploaded by: @{admin_username}",
         parse_mode='Markdown'
     )
 
-# ============ UPLOAD QR ============
+# ============ UPLOAD QR (WITH UPLOADER NAME) ============
 async def uploadqr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     user_id = update.effective_user.id
+    admin_username = update.effective_user.username or update.effective_user.first_name
+    
     if not is_admin(user_id):
         await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
         return
@@ -356,22 +406,29 @@ async def uploadqr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     qr_data = " ".join(context.args)
-    data["qr_stock"].append(qr_data)
+    # ✅ STORE WITH UPLOADER NAME
+    processed_qr = f"{qr_data}|uploaded_by_{admin_username}"
+    data["qr_stock"].append(processed_qr)
     data["qr_upload_counter"] = data.get("qr_upload_counter", 0) + 1
     data["qr_history"].append({
-        "id": data["qr_upload_counter"], "data": qr_data,
-        "status": "pending", "timestamp": get_ist_now().isoformat()
+        "id": data["qr_upload_counter"], 
+        "data": processed_qr,
+        "uploaded_by": admin_username,
+        "status": "pending", 
+        "timestamp": get_ist_now().isoformat()
     })
     save_data(data)
     await update.message.reply_text(
-        f"✅ **QR UPLOADED!**\n\n📱 Added: {qr_data}\n📦 Total: {len(data['qr_stock'])}/{MAX_QR_UPLOAD}",
+        f"✅ **QR UPLOADED!**\n\n📱 Added: {qr_data}\n📦 Total: {len(data['qr_stock'])}/{MAX_QR_UPLOAD}\n👤 Uploaded by: @{admin_username}",
         parse_mode='Markdown'
     )
 
-# ============ UPLOAD REVIEW ============
+# ============ UPLOAD REVIEW (WITH UPLOADER NAME) ============
 async def uploadr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     user_id = update.effective_user.id
+    admin_username = update.effective_user.username or update.effective_user.first_name
+    
     if not is_admin(user_id):
         await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
         return
@@ -384,19 +441,24 @@ async def uploadr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     review_data = " ".join(context.args)
-    data["review_stock"].append(review_data)
+    # ✅ STORE WITH UPLOADER NAME
+    processed_review = f"{review_data}|uploaded_by_{admin_username}"
+    data["review_stock"].append(processed_review)
     data["review_upload_counter"] = data.get("review_upload_counter", 0) + 1
     data["review_history"].append({
-        "id": data["review_upload_counter"], "data": review_data,
-        "status": "pending", "timestamp": get_ist_now().isoformat()
+        "id": data["review_upload_counter"], 
+        "data": processed_review,
+        "uploaded_by": admin_username,
+        "status": "pending", 
+        "timestamp": get_ist_now().isoformat()
     })
     save_data(data)
     await update.message.reply_text(
-        f"✅ **REVIEW UPLOADED!**\n\n📝 Added: {review_data[:50]}...\n📦 Total: {len(data['review_stock'])}",
+        f"✅ **REVIEW UPLOADED!**\n\n📝 Added: {review_data[:50]}...\n📦 Total: {len(data['review_stock'])}\n👤 Uploaded by: @{admin_username}",
         parse_mode='Markdown'
     )
 
-# ============ EMAIL COMMAND ============
+# ============ EMAIL COMMAND (SHOW UPLOADER NAME) ============
 async def email_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     data = load_data()
@@ -408,16 +470,12 @@ async def email_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if next_start:
             time_str = next_start.strftime('%I:%M %p')
             await update.message.reply_text(
-                f"🛠️ **MAINTENANCE MODE**\n\n"
-                f"Bot will be back at **{time_str}**\n\n"
-                f"⏰ Timing: 10 PM - 8 AM IST",
+                f"🛠️ **MAINTENANCE MODE**\n\nBot will be back at **{time_str}**",
                 parse_mode='Markdown'
             )
         else:
             await update.message.reply_text(
-                "🛠️ **MAINTENANCE MODE**\n\n"
-                "⏰ Timing: 10 PM - 8 AM IST\n\n"
-                "Please try again after 8 AM!",
+                "🛠️ **MAINTENANCE MODE**\n\n⏰ Timing: 10 PM - 8 AM IST",
                 parse_mode='Markdown'
             )
         return
@@ -434,28 +492,39 @@ async def email_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del data["cooldowns"][user_id]
             save_data(data)
     
-    if user_id in data["users"] and data["users"][user_id].get("completed", False):
-        await update.message.reply_text("❌ Already completed!", parse_mode='Markdown')
+    if user_id in data["pending"]:
+        await update.message.reply_text("⏳ You already have pending work! Use /cancel first.", parse_mode='Markdown')
         return
     
     if not data["email_stock"]:
-        await update.message.reply_text("❌ No stock!", parse_mode='Markdown')
-        return
-    
-    if user_id in data["pending"]:
-        await update.message.reply_text("⏳ Pending! Use /cancel", parse_mode='Markdown')
+        await update.message.reply_text("❌ No stock! Admin notified.", parse_mode='Markdown')
+        for admin in ADMINS:
+            try:
+                await context.bot.send_message(admin, "⚠️ EMAIL STOCK EMPTY! Use /upload")
+            except:
+                pass
         return
     
     email_data = data["email_stock"].pop(0)
     parts = email_data.split("|")
     
-    if len(parts) == 4:
-        name = parts[0].strip()
-        gmail = parts[1].strip()
-        password = parts[2].strip()
-        recovery = parts[3].strip()
+    # ✅ Extract uploader name from last part
+    uploaded_by = "Unknown Admin"
+    if len(parts) >= 5 and parts[4].startswith("uploaded_by_"):
+        uploaded_by = parts[4].replace("uploaded_by_", "")
+        # Remove uploader part for actual data
+        email_data_clean = "|".join(parts[:4])
     else:
-        gmail, password, recovery = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        email_data_clean = email_data
+    
+    parts_clean = email_data_clean.split("|")
+    if len(parts_clean) == 4:
+        name = parts_clean[0].strip()
+        gmail = parts_clean[1].strip()
+        password = parts_clean[2].strip()
+        recovery = parts_clean[3].strip()
+    else:
+        gmail, password, recovery = parts_clean[0].strip(), parts_clean[1].strip(), parts_clean[2].strip()
         name = username
     
     data["pending"][user_id] = {
@@ -465,6 +534,7 @@ async def email_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "recovery": recovery,
         "name": name,
         "username": username,
+        "uploaded_by": uploaded_by,
         "timestamp": get_ist_now().isoformat()
     }
     save_data(data)
@@ -476,24 +546,27 @@ async def email_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📧 **EMAIL ASSIGNED!**\n"
                 f"👤 @{username} (ID: `{user_id}`)\n"
                 f"📧 `{gmail}`\n"
+                f"👑 Uploaded by: @{uploaded_by}\n"
                 f"📦 Left: {len(data['email_stock'])}"
             )
         except:
             pass
     
+    # ✅ Show uploaded_by in user message
     await update.message.reply_text(
         f"📧 **EMAIL ASSIGNED!**\n\n"
         f"👤 Name: `{name}`\n"
         f"📧 Email: `{gmail}`\n"
         f"🔑 Pass: `{password}`\n"
-        f"📧 Recovery: `{recovery}`\n\n"
+        f"📧 Recovery: `{recovery}`\n"
+        f"👑 Uploaded by: @{uploaded_by}\n\n"  # ✅ UPLOADER NAME SHOW
         "📌 Login → /skip2fa → Upload QR → OTP → Screenshot\n\n"
         f"⏰ {TASK_TIMEOUT_MINUTES} min timeout!\n"
         "/cancel - Cancel",
         parse_mode='Markdown'
     )
 
-# ============ QR COMMAND ============
+# ============ QR COMMAND (SHOW UPLOADER NAME) ============
 async def qr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     data = load_data()
@@ -504,17 +577,9 @@ async def qr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         next_start = get_next_start_time()
         if next_start:
             time_str = next_start.strftime('%I:%M %p')
-            await update.message.reply_text(
-                f"🛠️ **MAINTENANCE MODE**\n\n"
-                f"Bot will be back at **{time_str}**",
-                parse_mode='Markdown'
-            )
+            await update.message.reply_text(f"🛠️ **MAINTENANCE MODE**\n\nBot will be back at **{time_str}**", parse_mode='Markdown')
         else:
-            await update.message.reply_text(
-                "🛠️ **MAINTENANCE MODE**\n\n"
-                "⏰ Timing: 10 PM - 8 AM IST",
-                parse_mode='Markdown'
-            )
+            await update.message.reply_text("🛠️ **MAINTENANCE MODE**\n\n⏰ Timing: 10 PM - 8 AM IST", parse_mode='Markdown')
         return
     
     if user_id in data.get("pending_qr", {}):
@@ -526,22 +591,37 @@ async def qr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     qr_data = data["qr_stock"].pop(0)
+    parts = qr_data.split("|")
+    
+    # ✅ Extract uploader name
+    uploaded_by = "Unknown Admin"
+    if len(parts) >= 2 and parts[-1].startswith("uploaded_by_"):
+        uploaded_by = parts[-1].replace("uploaded_by_", "")
+        qr_clean = "|".join(parts[:-1])
+    else:
+        qr_clean = qr_data
+    
     data["pending_qr"][user_id] = {
-        "qr_data": qr_data, "username": username,
+        "qr_data": qr_clean,
+        "qr_raw": qr_data,
+        "username": username,
+        "uploaded_by": uploaded_by,
         "timestamp": get_ist_now().isoformat()
     }
     save_data(data)
     
+    # ✅ Show uploaded_by in user message
     await update.message.reply_text(
         f"📱 **YOUR QR CODE**\n\n"
-        f"`{qr_data}`\n\n"
-        f"💰 **1 QR = ₹15**\n\n"
+        f"`{qr_clean}`\n\n"
+        f"💰 **1 QR = ₹15**\n"
+        f"👑 Uploaded by: @{uploaded_by}\n\n"  # ✅ UPLOADER NAME SHOW
         f"📸 Send screenshot proof\n"
         f"⏰ Expires in {QR_EXPIRE_MINUTES} minutes!",
         parse_mode='Markdown'
     )
 
-# ============ REVIVE/REVIEW COMMAND ============
+# ============ REVIVE COMMAND (SHOW UPLOADER NAME) ============
 async def revive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     data = load_data()
@@ -552,17 +632,9 @@ async def revive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         next_start = get_next_start_time()
         if next_start:
             time_str = next_start.strftime('%I:%M %p')
-            await update.message.reply_text(
-                f"🛠️ **MAINTENANCE MODE**\n\n"
-                f"Bot will be back at **{time_str}**",
-                parse_mode='Markdown'
-            )
+            await update.message.reply_text(f"🛠️ **MAINTENANCE MODE**\n\nBot will be back at **{time_str}**", parse_mode='Markdown')
         else:
-            await update.message.reply_text(
-                "🛠️ **MAINTENANCE MODE**\n\n"
-                "⏰ Timing: 10 PM - 8 AM IST",
-                parse_mode='Markdown'
-            )
+            await update.message.reply_text("🛠️ **MAINTENANCE MODE**\n\n⏰ Timing: 10 PM - 8 AM IST", parse_mode='Markdown')
         return
     
     if user_id in data.get("pending_review", {}):
@@ -574,16 +646,31 @@ async def revive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     review_data = data["review_stock"].pop(0)
+    parts = review_data.split("|")
+    
+    # ✅ Extract uploader name
+    uploaded_by = "Unknown Admin"
+    if len(parts) >= 2 and parts[-1].startswith("uploaded_by_"):
+        uploaded_by = parts[-1].replace("uploaded_by_", "")
+        review_clean = "|".join(parts[:-1])
+    else:
+        review_clean = review_data
+    
     data["pending_review"][user_id] = {
-        "review_data": review_data, "username": username,
+        "review_data": review_clean,
+        "review_raw": review_data,
+        "username": username,
+        "uploaded_by": uploaded_by,
         "timestamp": get_ist_now().isoformat()
     }
     save_data(data)
     
+    # ✅ Show uploaded_by in user message
     await update.message.reply_text(
         f"📝 **REVIEW WORK**\n\n"
-        f"`{review_data}`\n\n"
+        f"`{review_clean}`\n\n"
         f"📸 Send screenshot proof\n"
+        f"👑 Uploaded by: @{uploaded_by}\n\n"  # ✅ UPLOADER NAME SHOW
         f"⏰ Expires in {REVIEW_EXPIRE_MINUTES} minutes!",
         parse_mode='Markdown'
     )
@@ -626,8 +713,7 @@ async def handle_otp_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["pending"][user_id]["step"] = "waiting_screenshot"
         save_data(data)
         await update.message.reply_text(
-            "✅ **OTP Verified!**\n\n"
-            "📸 Send screenshot of Gmail inbox & settings as proof.",
+            "✅ **OTP Verified!**\n\n📸 Send screenshot of Gmail inbox & settings as proof.",
             parse_mode='Markdown'
         )
     else:
@@ -650,29 +736,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         if pending.get("type") == "email":
+            # ✅ Show pending work with uploader name
             await update.message.reply_text(
                 f"📧 **EMAIL WORK**\n\n"
                 f"👤 Name: `{pending.get('name', '')}`\n"
                 f"📧 Email: `{pending.get('gmail', '')}`\n"
                 f"🔑 Pass: `{pending.get('password', '')}`\n"
-                f"📧 Recovery: `{pending.get('recovery', '')}`\n\n"
-                "📌 /skip2fa - Skip 2FA\n"
-                "/cancel - Cancel work",
+                f"📧 Recovery: `{pending.get('recovery', '')}`\n"
+                f"👑 Uploaded by: @{pending.get('uploaded_by', 'Unknown')}\n\n"
+                "📌 /skip2fa - Skip 2FA\n/cancel - Cancel work",
                 parse_mode='Markdown'
             )
         return
     
     if user_id in data.get("pending_qr", {}):
+        pending = data["pending_qr"][user_id]
         await update.message.reply_text(
-            "📱 **QR PENDING**\n\n"
+            f"📱 **QR PENDING**\n\n"
+            f"📱 QR: `{pending.get('qr_data', '')}`\n"
+            f"👑 Uploaded by: @{pending.get('uploaded_by', 'Unknown')}\n\n"
             "Send a PHOTO as proof.",
             parse_mode='Markdown'
         )
         return
     
     if user_id in data.get("pending_review", {}):
+        pending = data["pending_review"][user_id]
         await update.message.reply_text(
-            "📝 **REVIEW PENDING**\n\n"
+            f"📝 **REVIEW PENDING**\n\n"
+            f"📝 Review: `{pending.get('review_data', '')}`\n"
+            f"👑 Uploaded by: @{pending.get('uploaded_by', 'Unknown')}\n\n"
             "Send a PHOTO as proof.",
             parse_mode='Markdown'
         )
@@ -697,7 +790,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     username = update.effective_user.username or update.effective_user.first_name
     
-    # Check for QR pending
+    # QR pending
     if user_id in data.get("pending_qr", {}):
         pending = data["pending_qr"][user_id]
         photo = update.message.photo[-1]
@@ -708,14 +801,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "type": "qr",
             "user_id": user_id,
             "username": username,
-            "data": pending["qr_data"],
+            "data": pending.get("qr_data", ""),
+            "uploaded_by": pending.get("uploaded_by", "Unknown"),
             "screenshot": file_id,
             "timestamp": get_ist_now().isoformat(),
             "status": "pending"
         }
         
         for qr in data.get("qr_history", []):
-            if qr["data"] == pending["qr_data"] and qr["status"] == "pending":
+            if qr["data"] == pending.get("qr_raw", "") and qr["status"] == "pending":
                 qr["status"] = "pending_approval"
                 break
         
@@ -730,7 +824,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption=f"📱 **QR PENDING APPROVAL!**\n\n"
                             f"👤 User: @{username}\n"
                             f"🆔 ID: `{user_id}`\n"
-                            f"📱 QR: `{pending['qr_data']}`\n"
+                            f"📱 QR: `{pending.get('qr_data', '')}`\n"
+                            f"👑 Uploaded by: @{pending.get('uploaded_by', 'Unknown')}\n"
                             f"⏰ Time: {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                             f"📌 Approve: `/approve {approval_id}`\n"
                             f"❌ Deny: `/deny {approval_id}`",
@@ -741,7 +836,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             f"✅ **QR SUBMITTED FOR APPROVAL!**\n\n"
-            f"📱 QR: `{pending['qr_data']}`\n"
+            f"📱 QR: `{pending.get('qr_data', '')}`\n"
+            f"👑 Uploaded by: @{pending.get('uploaded_by', 'Unknown')}\n"
             f"📸 Screenshot sent to admins\n"
             f"⏳ Waiting for admin approval\n\n"
             f"💰 You will get ₹15 after approval.\n"
@@ -750,7 +846,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check for Review pending
+    # Review pending
     if user_id in data.get("pending_review", {}):
         pending = data["pending_review"][user_id]
         photo = update.message.photo[-1]
@@ -761,14 +857,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "type": "review",
             "user_id": user_id,
             "username": username,
-            "data": pending["review_data"],
+            "data": pending.get("review_data", ""),
+            "uploaded_by": pending.get("uploaded_by", "Unknown"),
             "screenshot": file_id,
             "timestamp": get_ist_now().isoformat(),
             "status": "pending"
         }
         
         for rev in data.get("review_history", []):
-            if rev["data"] == pending["review_data"] and rev["status"] == "pending":
+            if rev["data"] == pending.get("review_raw", "") and rev["status"] == "pending":
                 rev["status"] = "pending_approval"
                 break
         
@@ -783,7 +880,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption=f"📝 **REVIEW PENDING APPROVAL!**\n\n"
                             f"👤 User: @{username}\n"
                             f"🆔 ID: `{user_id}`\n"
-                            f"📝 Review: `{pending['review_data']}`\n"
+                            f"📝 Review: `{pending.get('review_data', '')}`\n"
+                            f"👑 Uploaded by: @{pending.get('uploaded_by', 'Unknown')}\n"
                             f"⏰ Time: {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                             f"📌 Approve: `/approve {approval_id}`\n"
                             f"❌ Deny: `/deny {approval_id}`",
@@ -794,7 +892,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             f"✅ **REVIEW SUBMITTED FOR APPROVAL!**\n\n"
-            f"📝 Review: `{pending['review_data']}`\n"
+            f"📝 Review: `{pending.get('review_data', '')}`\n"
+            f"👑 Uploaded by: @{pending.get('uploaded_by', 'Unknown')}\n"
             f"📸 Screenshot sent to admins\n"
             f"⏳ Waiting for admin approval\n\n"
             f"💰 You will get ₹15 after approval.\n"
@@ -803,7 +902,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check for Email pending
+    # Email pending
     if user_id in data.get("pending", {}):
         pending = data["pending"][user_id]
         if pending.get("step") == "waiting_screenshot" or pending.get("step") == "waiting_otp":
@@ -815,6 +914,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             recovery = pending.get("recovery")
             name = pending.get("name", username)
             skip_2fa = pending.get("skip_2fa", False)
+            uploaded_by = pending.get("uploaded_by", "Unknown")
             
             approval_id = f"email_{user_id}_{int(get_ist_now().timestamp())}"
             data["pending_approvals"][approval_id] = {
@@ -825,16 +925,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "password": password,
                 "recovery": recovery,
                 "name": name,
+                "uploaded_by": uploaded_by,
                 "screenshot": file_id,
                 "skip_2fa": skip_2fa,
                 "timestamp": get_ist_now().isoformat(),
                 "status": "pending"
             }
-            
-            for upload in data.get("upload_history", []):
-                if upload["raw"].find(gmail) != -1 and upload["status"] == "pending":
-                    upload["status"] = "pending_approval"
-                    break
             
             del data["pending"][user_id]
             save_data(data)
@@ -851,6 +947,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 f"📧 **Email:** `{gmail}`\n"
                                 f"🔑 **Pass:** `{password}`\n"
                                 f"📧 **Recovery:** `{recovery}`\n"
+                                f"👑 **Uploaded by:** @{uploaded_by}\n"
                                 f"📸 **2FA:** {'✅ Enabled' if not skip_2fa else '❌ Skipped'}\n"
                                 f"⏰ **Time:** {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                                 f"📌 Approve: `/approve {approval_id}`\n"
@@ -866,6 +963,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📧 Email: `{gmail}`\n"
                 f"🔑 Pass: `{password}`\n"
                 f"📧 Recovery: `{recovery}`\n"
+                f"👑 Uploaded by: @{uploaded_by}\n"
                 f"📸 2FA: {'✅ Enabled' if not skip_2fa else '❌ Skipped'}\n\n"
                 f"📸 Screenshot sent to admins\n"
                 f"⏳ Waiting for admin approval\n\n"
@@ -911,7 +1009,7 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_user_id = approval["user_id"]
     
     if target_user_id not in data["users"]:
-        data["users"][target_user_id] = {"balance": 0, "username": approval["username"], "completed": False}
+        data["users"][target_user_id] = {"balance": 0, "username": approval["username"]}
     
     data["users"][target_user_id]["balance"] = data["users"][target_user_id].get("balance", 0) + 15
     
@@ -921,7 +1019,6 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["users"][target_user_id]["password"] = approval.get("password")
         data["users"][target_user_id]["recovery"] = approval.get("recovery")
         data["users"][target_user_id]["name"] = approval.get("name")
-        data["users"][target_user_id]["completed"] = True
         data["used_emails"].append(approval.get("gmail"))
         
         for upload in data.get("upload_history", []):
@@ -1068,6 +1165,7 @@ async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"📌 Type: {approval['type']}\n"
             if approval["type"] == "email":
                 text += f"📧 {approval.get('gmail', '')}\n"
+            text += f"👑 Uploaded by: @{approval.get('uploaded_by', 'Unknown')}\n"
             text += f"📌 Approve: `/approve {aid}`\n"
             text += f"❌ Deny: `/deny {aid}`\n\n"
     
@@ -1086,24 +1184,27 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending = data["pending"][user_id]
         if pending.get("type") == "email":
             name = pending.get("name", "User")
-            email_data = f"{name}|{pending['gmail']}|{pending['password']}|{pending['recovery']}"
+            uploaded_by = pending.get("uploaded_by", "Unknown")
+            email_data = f"{name}|{pending['gmail']}|{pending['password']}|{pending['recovery']}|uploaded_by_{uploaded_by}"
             data["email_stock"].append(email_data)
         elif pending.get("type") == "qr":
-            data["qr_stock"].append(pending.get("qr_data"))
+            uploaded_by = pending.get("uploaded_by", "Unknown")
+            data["qr_stock"].append(f"{pending['qr_data']}|uploaded_by_{uploaded_by}")
         elif pending.get("type") == "review":
-            data["review_stock"].append(pending.get("review_data"))
+            uploaded_by = pending.get("uploaded_by", "Unknown")
+            data["review_stock"].append(f"{pending['review_data']}|uploaded_by_{uploaded_by}")
         del data["pending"][user_id]
         save_data(data)
         await update.message.reply_text("❌ Cancelled! Work returned.", parse_mode='Markdown')
     elif user_id in data.get("pending_qr", {}):
         pending = data["pending_qr"][user_id]
-        data["qr_stock"].append(pending["qr_data"])
+        data["qr_stock"].append(pending["qr_raw"])
         del data["pending_qr"][user_id]
         save_data(data)
         await update.message.reply_text("❌ QR cancelled!", parse_mode='Markdown')
     elif user_id in data.get("pending_review", {}):
         pending = data["pending_review"][user_id]
-        data["review_stock"].append(pending["review_data"])
+        data["review_stock"].append(pending["review_raw"])
         del data["pending_review"][user_id]
         save_data(data)
         await update.message.reply_text("❌ Review cancelled!", parse_mode='Markdown')
@@ -1289,8 +1390,7 @@ async def approve_withdraw_command(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text(
             "✅ **APPROVE WITHDRAWAL**\n\n"
             "Usage: `/approve_withdraw [user_id] [amount]`\n\n"
-            "Example: `/approve_withdraw 123456789 15`\n\n"
-            "⚠️ This will approve the withdrawal.",
+            "Example: `/approve_withdraw 123456789 15`",
             parse_mode='Markdown'
         )
         return
@@ -1347,8 +1447,7 @@ async def approve_withdraw_command(update: Update, context: ContextTypes.DEFAULT
     await update.message.reply_text(
         f"✅ **WITHDRAWAL APPROVED!**\n\n"
         f"👤 User: `{target_id}`\n"
-        f"💰 ₹{amount} approved\n"
-        f"📌 Balance updated.",
+        f"💰 ₹{amount} approved",
         parse_mode='Markdown'
     )
 
@@ -1365,8 +1464,7 @@ async def deny_withdraw_command(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(
             "❌ **DENY WITHDRAWAL**\n\n"
             "Usage: `/deny_withdraw [user_id] [amount] [reason]`\n\n"
-            "Example: `/deny_withdraw 123456789 15 Invalid UPI`\n\n"
-            "⚠️ This will deny the withdrawal with reason.",
+            "Example: `/deny_withdraw 123456789 15 Invalid UPI`",
             parse_mode='Markdown'
         )
         return
@@ -1442,7 +1540,7 @@ async def setupi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     upi = context.args[0]
     if user_id not in data["users"]:
-        data["users"][user_id] = {"balance": 0, "username": update.effective_user.first_name, "completed": False}
+        data["users"][user_id] = {"balance": 0, "username": update.effective_user.first_name}
     data["users"][user_id]["upi"] = upi
     save_data(data)
     await update.message.reply_text(f"✅ UPI Set: `{upi}`", parse_mode='Markdown')
@@ -1492,15 +1590,22 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    if user_id in data["users"] and data["users"][user_id].get("completed", False):
+    if user_id in data["users"]:
         user = data["users"][user_id]
         await update.message.reply_text(
-            f"✅ **VERIFIED**\n📧 `{user.get('gmail', '')}`\n💰 ₹{user.get('balance', 0)}",
+            f"✅ **ACCOUNT**\n"
+            f"💰 Balance: ₹{user.get('balance', 0)}\n"
+            f"📧 Email: {'✅' if user.get('email_done') else '❌'}\n"
+            f"📱 QR: {'✅' if user.get('qr_done') else '❌'}\n"
+            f"📝 Review: {'✅' if user.get('review_done') else '❌'}\n\n"
+            f"📌 /email - Get email work\n"
+            f"/qr - Get QR work\n"
+            f"/revive - Get review work",
             parse_mode='Markdown'
         )
     else:
         await update.message.reply_text(
-            "❌ No active work.\n\n"
+            "❌ No account.\n\n"
             "📌 Commands:\n"
             "/email - Get email work\n"
             "/qr - Get QR work\n"
@@ -1540,7 +1645,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/approve [id] - Approve work (+₹15)\n"
             "/deny [id] - Deny work (No ₹)\n"
             "/approve_withdraw [id] [amount] - Approve withdrawal\n"
-            "/deny_withdraw [id] [amount] [reason] - Deny withdrawal with reason\n"
+            "/deny_withdraw [id] [amount] [reason] - Deny withdrawal\n"
+            "/broadcast [message] - Send to all users\n"
+            "/mainon - Maintenance ON\n"
+            "/mainoff - Maintenance OFF\n"
             "/cancel #id - Cancel upload\n"
             "/reset all - Reset all (Owner)\n"
             "/newadmin [user_id] - Add admin (Owner)\n"
@@ -1561,22 +1669,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if next_start:
             time_str = next_start.strftime('%I:%M %p')
             await update.message.reply_text(
-                f"🛠️ **MAINTENANCE MODE**\n\n"
-                f"Bot will be back at **{time_str}**\n\n"
-                f"⏰ Timing: 10 PM - 8 AM IST",
+                f"🛠️ **MAINTENANCE MODE**\n\nBot will be back at **{time_str}**",
                 parse_mode='Markdown'
             )
         else:
             await update.message.reply_text(
-                "🛠️ **MAINTENANCE MODE**\n\n"
-                "⏰ Timing: 10 PM - 8 AM IST\n\n"
-                "Please try again after 8 AM!",
+                "🛠️ **MAINTENANCE MODE**\n\n⏰ Timing: 10 PM - 8 AM IST",
                 parse_mode='Markdown'
             )
         return
     
     if user_id not in data["users"]:
-        data["users"][user_id] = {"balance": 0, "username": user.first_name, "completed": False}
+        data["users"][user_id] = {"balance": 0, "username": user.first_name}
         save_data(data)
     
     await update.message.reply_text(
@@ -1599,9 +1703,6 @@ def main():
     global data, ADMINS
     data = load_data()
     ADMINS = data.get("admins", [OWNER_ID])
-    
-    # Start Flask server in background
-    threading.Thread(target=run_flask, daemon=True).start()
     
     request = HTTPXRequest(
         connect_timeout=HTTPX_TIMEOUT,
@@ -1636,6 +1737,9 @@ def main():
     app.add_handler(CommandHandler("deny", deny_command))
     app.add_handler(CommandHandler("approve_withdraw", approve_withdraw_command))
     app.add_handler(CommandHandler("deny_withdraw", deny_withdraw_command))
+    app.add_handler(CommandHandler("broadcast", broadcast_command))
+    app.add_handler(CommandHandler("mainon", mainon_command))
+    app.add_handler(CommandHandler("mainoff", mainoff_command))
     app.add_handler(CommandHandler("newadmin", newadmin_command))
     app.add_handler(CommandHandler("reset", reset_all_command))
     app.add_handler(CommandHandler("cancel", cancel_upload_command))
@@ -1663,7 +1767,6 @@ def main():
     print(f"💰 Withdrawals: {len(data.get('withdraw_requests', []))}")
     print(f"👑 Admins: {ADMINS}")
     print(f"⏰ Bot Timings: 8 AM - 10 PM IST")
-    print(f"🔄 Flask server running on port 10000")
     
     app.run_polling()
 
