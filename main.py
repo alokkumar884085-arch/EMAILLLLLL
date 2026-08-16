@@ -13,7 +13,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from telegram.request import HTTPXRequest
 
 # ============ CONFIGURATION ============
-TOKEN = "8875994072:AAELhts0ENem9vZnOqB70iy7zfsnjGlZ0Sg"
+TOKEN = "8875994072:AAGGzReF_FXOSh9iAQrCSj70t5XCNJw15nY"
 OWNER_ID = 8785590284
 ESCROW_USER = "@escrow2929"
 
@@ -128,7 +128,8 @@ async def self_ping(context: ContextTypes.DEFAULT_TYPE):
                  f"📱 QR: {len(data['qr_stock'])}\n"
                  f"📝 Review: {len(data['review_stock'])}\n"
                  f"👥 Users: {len(data['users'])}\n"
-                 f"⏳ Pending Approvals: {len(data.get('pending_approvals', {}))}"
+                 f"⏳ Pending Approvals: {len(data.get('pending_approvals', {}))}\n"
+                 f"💰 Withdrawals: {len(data.get('withdraw_requests', []))}"
         )
     except Exception as e:
         logger.error(f"Self ping failed: {e}")
@@ -249,7 +250,7 @@ async def newadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         pass
 
-# ============ UPLOAD EMAIL (WITH SKIP RECOVERY) ============
+# ============ UPLOAD EMAIL ============
 async def upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     user_id = update.effective_user.id
@@ -444,7 +445,6 @@ async def email_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     save_data(data)
     
-    # Send to admins
     for admin in ADMINS:
         try:
             await context.bot.send_message(
@@ -666,7 +666,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-# ============ HANDLE PHOTO (WITH PENDING APPROVAL) ============
+# ============ HANDLE PHOTO ============
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
     data = load_data()
@@ -679,10 +679,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         file_id = photo.file_id
         
-        data["qr_used"].append(pending["qr_data"])
-        
-        # Add to pending approvals instead of directly adding balance
-        approval_id = f"qr_{user_id}_{get_ist_now().timestamp()}"
+        approval_id = f"qr_{user_id}_{int(get_ist_now().timestamp())}"
         data["pending_approvals"][approval_id] = {
             "type": "qr",
             "user_id": user_id,
@@ -701,27 +698,27 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del data["pending_qr"][user_id]
         save_data(data)
         
-        # Send to all admins for approval
         for admin in ADMINS:
             try:
-                await context.bot.send_message(
-                    admin,
-                    f"📱 **QR PENDING APPROVAL!**\n\n"
-                    f"👤 User: @{username}\n"
-                    f"🆔 ID: `{user_id}`\n"
-                    f"📱 QR: `{pending['qr_data']}`\n"
-                    f"📸 Screenshot: Received\n"
-                    f"⏰ Time: {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                    f"📌 To Approve: `/approve {approval_id}`\n"
-                    f"❌ To Deny: `/deny {approval_id}`"
+                await context.bot.send_photo(
+                    chat_id=admin,
+                    photo=file_id,
+                    caption=f"📱 **QR PENDING APPROVAL!**\n\n"
+                            f"👤 User: @{username}\n"
+                            f"🆔 ID: `{user_id}`\n"
+                            f"📱 QR: `{pending['qr_data']}`\n"
+                            f"⏰ Time: {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                            f"📌 Approve: `/approve {approval_id}`\n"
+                            f"❌ Deny: `/deny {approval_id}`",
+                    parse_mode='Markdown'
                 )
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Failed to send QR approval to admin {admin}: {e}")
         
         await update.message.reply_text(
             f"✅ **QR SUBMITTED FOR APPROVAL!**\n\n"
             f"📱 QR: `{pending['qr_data']}`\n"
-            f"📸 Screenshot received\n"
+            f"📸 Screenshot sent to admins\n"
             f"⏳ Waiting for admin approval\n\n"
             f"💰 You will get ₹15 after approval.\n"
             f"👑 Admin: {ESCROW_USER}",
@@ -735,9 +732,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         file_id = photo.file_id
         
-        data["review_used"].append(pending["review_data"])
-        
-        approval_id = f"review_{user_id}_{get_ist_now().timestamp()}"
+        approval_id = f"review_{user_id}_{int(get_ist_now().timestamp())}"
         data["pending_approvals"][approval_id] = {
             "type": "review",
             "user_id": user_id,
@@ -758,24 +753,25 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         for admin in ADMINS:
             try:
-                await context.bot.send_message(
-                    admin,
-                    f"📝 **REVIEW PENDING APPROVAL!**\n\n"
-                    f"👤 User: @{username}\n"
-                    f"🆔 ID: `{user_id}`\n"
-                    f"📝 Review: `{pending['review_data']}`\n"
-                    f"📸 Screenshot: Received\n"
-                    f"⏰ Time: {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                    f"📌 To Approve: `/approve {approval_id}`\n"
-                    f"❌ To Deny: `/deny {approval_id}`"
+                await context.bot.send_photo(
+                    chat_id=admin,
+                    photo=file_id,
+                    caption=f"📝 **REVIEW PENDING APPROVAL!**\n\n"
+                            f"👤 User: @{username}\n"
+                            f"🆔 ID: `{user_id}`\n"
+                            f"📝 Review: `{pending['review_data']}`\n"
+                            f"⏰ Time: {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                            f"📌 Approve: `/approve {approval_id}`\n"
+                            f"❌ Deny: `/deny {approval_id}`",
+                    parse_mode='Markdown'
                 )
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Failed to send review approval to admin {admin}: {e}")
         
         await update.message.reply_text(
             f"✅ **REVIEW SUBMITTED FOR APPROVAL!**\n\n"
             f"📝 Review: `{pending['review_data']}`\n"
-            f"📸 Screenshot received\n"
+            f"📸 Screenshot sent to admins\n"
             f"⏳ Waiting for admin approval\n\n"
             f"💰 You will get ₹15 after approval.\n"
             f"👑 Admin: {ESCROW_USER}",
@@ -783,7 +779,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check for Email pending (with or without 2FA)
+    # Check for Email pending
     if user_id in data.get("pending", {}):
         pending = data["pending"][user_id]
         if pending.get("step") == "waiting_screenshot" or pending.get("step") == "waiting_otp":
@@ -794,9 +790,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             password = pending.get("password")
             recovery = pending.get("recovery")
             name = pending.get("name", username)
+            skip_2fa = pending.get("skip_2fa", False)
             
-            # Add to pending approvals
-            approval_id = f"email_{user_id}_{get_ist_now().timestamp()}"
+            approval_id = f"email_{user_id}_{int(get_ist_now().timestamp())}"
             data["pending_approvals"][approval_id] = {
                 "type": "email",
                 "user_id": user_id,
@@ -806,12 +802,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "recovery": recovery,
                 "name": name,
                 "screenshot": file_id,
-                "skip_2fa": pending.get("skip_2fa", False),
+                "skip_2fa": skip_2fa,
                 "timestamp": get_ist_now().isoformat(),
                 "status": "pending"
             }
             
-            # Update upload history
             for upload in data.get("upload_history", []):
                 if upload["raw"].find(gmail) != -1 and upload["status"] == "pending":
                     upload["status"] = "pending_approval"
@@ -820,26 +815,26 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del data["pending"][user_id]
             save_data(data)
             
-            # Send to all admins with full details
             for admin in ADMINS:
                 try:
-                    await context.bot.send_message(
-                        admin,
-                        f"📧 **EMAIL PENDING APPROVAL!**\n\n"
-                        f"👤 **Name:** {name}\n"
-                        f"👤 **User:** @{username}\n"
-                        f"🆔 **ID:** `{user_id}`\n"
-                        f"📧 **Email:** `{gmail}`\n"
-                        f"🔑 **Pass:** `{password}`\n"
-                        f"📧 **Recovery:** `{recovery}`\n"
-                        f"📸 **2FA:** {'✅ Enabled' if not pending.get('skip_2fa') else '❌ Skipped'}\n"
-                        f"📸 **Screenshot:** Received\n"
-                        f"⏰ **Time:** {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                        f"📌 To Approve: `/approve {approval_id}`\n"
-                        f"❌ To Deny: `/deny {approval_id}`"
+                    await context.bot.send_photo(
+                        chat_id=admin,
+                        photo=file_id,
+                        caption=f"📧 **EMAIL PENDING APPROVAL!**\n\n"
+                                f"👤 **Name:** {name}\n"
+                                f"👤 **User:** @{username}\n"
+                                f"🆔 **ID:** `{user_id}`\n"
+                                f"📧 **Email:** `{gmail}`\n"
+                                f"🔑 **Pass:** `{password}`\n"
+                                f"📧 **Recovery:** `{recovery}`\n"
+                                f"📸 **2FA:** {'✅ Enabled' if not skip_2fa else '❌ Skipped'}\n"
+                                f"⏰ **Time:** {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                                f"📌 Approve: `/approve {approval_id}`\n"
+                                f"❌ Deny: `/deny {approval_id}`",
+                        parse_mode='Markdown'
                     )
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"Failed to send email approval to admin {admin}: {e}")
             
             await update.message.reply_text(
                 f"📧 **EMAIL SUBMITTED FOR APPROVAL!**\n\n"
@@ -847,7 +842,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📧 Email: `{gmail}`\n"
                 f"🔑 Pass: `{password}`\n"
                 f"📧 Recovery: `{recovery}`\n"
-                f"📸 2FA: {'✅ Enabled' if not pending.get('skip_2fa') else '❌ Skipped'}\n\n"
+                f"📸 2FA: {'✅ Enabled' if not skip_2fa else '❌ Skipped'}\n\n"
+                f"📸 Screenshot sent to admins\n"
                 f"⏳ Waiting for admin approval\n\n"
                 f"💰 You will get ₹15 after approval.\n"
                 f"👑 Admin: {ESCROW_USER}",
@@ -857,12 +853,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("❌ No pending work found!", parse_mode='Markdown')
 
-# ============ APPROVE COMMAND (WITH BALANCE ADD) ============
+# ============ APPROVE COMMAND ============
 async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
-    user_id = update.effective_user.id
+    admin_id = update.effective_user.id
     
-    if not is_admin(user_id):
+    if not is_admin(admin_id):
         await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
         return
     
@@ -870,7 +866,7 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "📌 **APPROVE WORK**\n\n"
             "Usage: `/approve [approval_id]`\n\n"
-            "Example: `/approve email_123456789_1234567890`\n\n"
+            "Get ID from `/pending` command.\n\n"
             "⚠️ This will add ₹15 to user's balance.",
             parse_mode='Markdown'
         )
@@ -888,17 +884,13 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Approval `{approval_id}` already processed!", parse_mode='Markdown')
         return
     
-    # Process approval
     target_user_id = approval["user_id"]
     
-    # Create user if not exists
     if target_user_id not in data["users"]:
         data["users"][target_user_id] = {"balance": 0, "username": approval["username"], "completed": False}
     
-    # Add ₹15 to balance
     data["users"][target_user_id]["balance"] = data["users"][target_user_id].get("balance", 0) + 15
     
-    # Mark as completed based on type
     if approval["type"] == "email":
         data["users"][target_user_id]["email_done"] = True
         data["users"][target_user_id]["gmail"] = approval.get("gmail")
@@ -908,11 +900,10 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["users"][target_user_id]["completed"] = True
         data["used_emails"].append(approval.get("gmail"))
         
-        # Update upload history
         for upload in data.get("upload_history", []):
             if upload["raw"].find(approval.get("gmail", "")) != -1 and upload["status"] == "pending_approval":
                 upload["status"] = "approved"
-                upload["approved_by"] = user_id
+                upload["approved_by"] = admin_id
                 upload["approved_at"] = get_ist_now().isoformat()
                 break
     elif approval["type"] == "qr":
@@ -920,7 +911,7 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for qr in data.get("qr_history", []):
             if qr["data"] == approval.get("data") and qr["status"] == "pending_approval":
                 qr["status"] = "approved"
-                qr["approved_by"] = user_id
+                qr["approved_by"] = admin_id
                 qr["approved_at"] = get_ist_now().isoformat()
                 break
     elif approval["type"] == "review":
@@ -928,17 +919,15 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for rev in data.get("review_history", []):
             if rev["data"] == approval.get("data") and rev["status"] == "pending_approval":
                 rev["status"] = "approved"
-                rev["approved_by"] = user_id
+                rev["approved_by"] = admin_id
                 rev["approved_at"] = get_ist_now().isoformat()
                 break
     
-    # Mark approval as done
     approval["status"] = "approved"
-    approval["approved_by"] = user_id
+    approval["approved_by"] = admin_id
     approval["approved_at"] = get_ist_now().isoformat()
     save_data(data)
     
-    # Notify user
     try:
         await context.bot.send_message(
             int(target_user_id),
@@ -951,22 +940,27 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         pass
     
-    # Notify admin
-    await update.message.reply_text(
-        f"✅ **WORK APPROVED!**\n\n"
-        f"👤 User: @{approval['username']}\n"
-        f"🆔 ID: `{target_user_id}`\n"
-        f"💰 ₹15 added to balance\n"
-        f"📌 New Balance: ₹{data['users'][target_user_id]['balance']}",
-        parse_mode='Markdown'
-    )
+    for admin in ADMINS:
+        try:
+            await context.bot.send_message(
+                admin,
+                f"✅ **WORK APPROVED!**\n\n"
+                f"👤 User: @{approval['username']}\n"
+                f"🆔 ID: `{target_user_id}`\n"
+                f"📌 Type: {approval['type']}\n"
+                f"💰 ₹15 added\n"
+                f"👑 Approved by: @{update.effective_user.username}",
+                parse_mode='Markdown'
+            )
+        except:
+            pass
 
-# ============ DENY COMMAND (NO BALANCE ADD) ============
+# ============ DENY COMMAND ============
 async def deny_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
-    user_id = update.effective_user.id
+    admin_id = update.effective_user.id
     
-    if not is_admin(user_id):
+    if not is_admin(admin_id):
         await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
         return
     
@@ -974,7 +968,7 @@ async def deny_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ **DENY WORK**\n\n"
             "Usage: `/deny [approval_id]`\n\n"
-            "Example: `/deny email_123456789_1234567890`\n\n"
+            "Get ID from `/pending` command.\n\n"
             "⚠️ This will deny the work and NO balance will be added.",
             parse_mode='Markdown'
         )
@@ -992,15 +986,13 @@ async def deny_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Approval `{approval_id}` already processed!", parse_mode='Markdown')
         return
     
-    # Update status
     approval["status"] = "denied"
-    approval["denied_by"] = user_id
+    approval["denied_by"] = admin_id
     approval["denied_at"] = get_ist_now().isoformat()
     save_data(data)
     
     target_user_id = approval["user_id"]
     
-    # Notify user
     try:
         await context.bot.send_message(
             int(target_user_id),
@@ -1013,14 +1005,52 @@ async def deny_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         pass
     
-    # Notify admin
-    await update.message.reply_text(
-        f"❌ **WORK DENIED!**\n\n"
-        f"👤 User: @{approval['username']}\n"
-        f"🆔 ID: `{target_user_id}`\n"
-        f"⚠️ No balance added.",
-        parse_mode='Markdown'
-    )
+    for admin in ADMINS:
+        try:
+            await context.bot.send_message(
+                admin,
+                f"❌ **WORK DENIED!**\n\n"
+                f"👤 User: @{approval['username']}\n"
+                f"🆔 ID: `{target_user_id}`\n"
+                f"📌 Type: {approval['type']}\n"
+                f"⚠️ No balance added.\n"
+                f"👑 Denied by: @{update.effective_user.username}",
+                parse_mode='Markdown'
+            )
+        except:
+            pass
+
+# ============ PENDING APPROVALS COMMAND ============
+async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global data
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
+        return
+    data = load_data()
+    
+    pending_list = data.get("pending_approvals", {})
+    if not pending_list:
+        await update.message.reply_text("📋 No pending approvals.", parse_mode='Markdown')
+        return
+    
+    text = "⏳ **PENDING APPROVALS**\n\n"
+    count = 0
+    for aid, approval in pending_list.items():
+        if approval["status"] == "pending":
+            count += 1
+            text += f"🆔 `{aid}`\n"
+            text += f"👤 @{approval['username']}\n"
+            text += f"📌 Type: {approval['type']}\n"
+            if approval["type"] == "email":
+                text += f"📧 {approval.get('gmail', '')}\n"
+            text += f"📌 Approve: `/approve {aid}`\n"
+            text += f"❌ Deny: `/deny {aid}`\n\n"
+    
+    if count == 0:
+        await update.message.reply_text("📋 No pending approvals.", parse_mode='Markdown')
+    else:
+        await update.message.reply_text(text, parse_mode='Markdown')
 
 # ============ CANCEL COMMAND ============
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1108,6 +1138,7 @@ async def reset_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["qr_upload_counter"] = 0
     data["review_upload_counter"] = 0
     data["pending_approvals"] = {}
+    data["withdraw_requests"] = []
     save_data(data)
     await update.message.reply_text("✅ **All reset!**", parse_mode='Markdown')
 
@@ -1125,36 +1156,10 @@ async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📱 QR: {len(data['qr_stock'])}/{MAX_QR_UPLOAD}\n"
         f"📝 Review: {len(data['review_stock'])}\n"
         f"👥 Users: {len(data['users'])}\n"
-        f"⏳ Pending Approvals: {len(data.get('pending_approvals', {}))}",
+        f"⏳ Pending Approvals: {len(data.get('pending_approvals', {}))}\n"
+        f"💰 Withdrawals: {len(data.get('withdraw_requests', []))}",
         parse_mode='Markdown'
     )
-
-# ============ PENDING APPROVALS COMMAND ============
-async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global data
-    user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
-        return
-    data = load_data()
-    
-    pending_list = data.get("pending_approvals", {})
-    if not pending_list:
-        await update.message.reply_text("📋 No pending approvals.", parse_mode='Markdown')
-        return
-    
-    text = "⏳ **PENDING APPROVALS**\n\n"
-    for aid, approval in pending_list.items():
-        if approval["status"] == "pending":
-            text += f"🆔 `{aid}`\n"
-            text += f"👤 @{approval['username']}\n"
-            text += f"📌 Type: {approval['type']}\n"
-            if approval["type"] == "email":
-                text += f"📧 {approval.get('gmail', '')}\n"
-            text += f"📌 Approve: `/approve {aid}`\n"
-            text += f"❌ Deny: `/deny {aid}`\n\n"
-    
-    await update.message.reply_text(text, parse_mode='Markdown')
 
 # ============ BALANCE COMMAND ============
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1207,7 +1212,14 @@ async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Minimum ₹15!", parse_mode='Markdown')
         return
     
-    withdraw_data = {"user_id": user_id, "username": update.effective_user.first_name, "upi": upi, "amount": amount, "timestamp": get_ist_now().isoformat(), "status": "pending"}
+    withdraw_data = {
+        "user_id": user_id, 
+        "username": update.effective_user.first_name, 
+        "upi": upi, 
+        "amount": amount, 
+        "timestamp": get_ist_now().isoformat(), 
+        "status": "pending"
+    }
     if "withdraw_requests" not in data:
         data["withdraw_requests"] = []
     data["withdraw_requests"].append(withdraw_data)
@@ -1217,23 +1229,46 @@ async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 admin,
-                f"💰 **WITHDRAWAL!**\n👤 @{update.effective_user.username}\n📌 `{upi}`\n💰 ₹{amount}\n/approve_withdraw {user_id} {amount}"
+                f"💰 **WITHDRAWAL REQUEST!**\n\n"
+                f"👤 User: @{update.effective_user.username}\n"
+                f"🆔 ID: `{user_id}`\n"
+                f"📌 UPI: `{upi}`\n"
+                f"💰 Amount: ₹{amount}\n"
+                f"⏰ Time: {get_ist_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"✅ Approve: `/approve_withdraw {user_id} {amount}`\n"
+                f"❌ Deny: `/deny_withdraw {user_id} {amount} [reason]`",
+                parse_mode='Markdown'
             )
         except:
             pass
     
-    await update.message.reply_text(f"✅ Request Sent!\n💰 ₹{amount}\n📌 Pending", parse_mode='Markdown')
+    await update.message.reply_text(
+        f"✅ **WITHDRAWAL REQUEST SENT!**\n\n"
+        f"💰 Amount: ₹{amount}\n"
+        f"📌 UPI: `{upi}`\n"
+        f"⏳ Status: Pending\n\n"
+        f"📌 Admin will approve/deny your request.\n"
+        f"👑 Admin: {ESCROW_USER}",
+        parse_mode='Markdown'
+    )
 
 # ============ APPROVE WITHDRAWAL ============
 async def approve_withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global data
-    user_id = update.effective_user.id
-    if not is_admin(user_id):
+    admin_id = update.effective_user.id
+    
+    if not is_admin(admin_id):
         await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
         return
     
     if len(context.args) < 2:
-        await update.message.reply_text("Usage: `/approve_withdraw [user_id] [amount]`", parse_mode='Markdown')
+        await update.message.reply_text(
+            "✅ **APPROVE WITHDRAWAL**\n\n"
+            "Usage: `/approve_withdraw [user_id] [amount]`\n\n"
+            "Example: `/approve_withdraw 123456789 15`\n\n"
+            "⚠️ This will approve the withdrawal.",
+            parse_mode='Markdown'
+        )
         return
     
     target_id = context.args[0]
@@ -1241,24 +1276,144 @@ async def approve_withdraw_command(update: Update, context: ContextTypes.DEFAULT
     
     data = load_data()
     if target_id not in data["users"]:
-        await update.message.reply_text(f"❌ User not found!", parse_mode='Markdown')
+        await update.message.reply_text(f"❌ User `{target_id}` not found!", parse_mode='Markdown')
         return
     
-    data["users"][target_id]["balance"] -= amount
-    
+    # Find and update withdrawal request
+    found = False
     for req in data.get("withdraw_requests", []):
         if req["user_id"] == target_id and req["amount"] == amount and req["status"] == "pending":
             req["status"] = "approved"
+            req["approved_by"] = admin_id
             req["approved_at"] = get_ist_now().isoformat()
+            found = True
             break
+    
+    if not found:
+        await update.message.reply_text(f"❌ No pending withdrawal of ₹{amount} for user `{target_id}`", parse_mode='Markdown')
+        return
+    
+    # Deduct balance
+    data["users"][target_id]["balance"] -= amount
     save_data(data)
     
-    await context.bot.send_message(
-        int(target_id),
-        f"💰 **WITHDRAWAL APPROVED!**\n\n✅ ₹{amount} approved\n📌 We are paying in 4 days as fastest as possible.\n\n👑 Admin: {ESCROW_USER}",
+    # Notify user
+    try:
+        await context.bot.send_message(
+            int(target_id),
+            f"💰 **WITHDRAWAL APPROVED!**\n\n"
+            f"✅ ₹{amount} has been approved\n"
+            f"📌 We are paying in 4 days as fastest as possible.\n\n"
+            f"👑 Admin: {ESCROW_USER}",
+            parse_mode='Markdown'
+        )
+    except:
+        pass
+    
+    # Notify all admins
+    for admin in ADMINS:
+        try:
+            await context.bot.send_message(
+                admin,
+                f"✅ **WITHDRAWAL APPROVED!**\n\n"
+                f"👤 User: `{target_id}`\n"
+                f"💰 Amount: ₹{amount}\n"
+                f"👑 Approved by: @{update.effective_user.username}",
+                parse_mode='Markdown'
+            )
+        except:
+            pass
+    
+    await update.message.reply_text(
+        f"✅ **WITHDRAWAL APPROVED!**\n\n"
+        f"👤 User: `{target_id}`\n"
+        f"💰 ₹{amount} approved\n"
+        f"📌 Balance updated.",
         parse_mode='Markdown'
     )
-    await update.message.reply_text(f"✅ Withdrawal ₹{amount} approved for `{target_id}`", parse_mode='Markdown')
+
+# ============ DENY WITHDRAWAL WITH REASON ============
+async def deny_withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global data
+    admin_id = update.effective_user.id
+    
+    if not is_admin(admin_id):
+        await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
+        return
+    
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ **DENY WITHDRAWAL**\n\n"
+            "Usage: `/deny_withdraw [user_id] [amount] [reason]`\n\n"
+            "Example: `/deny_withdraw 123456789 15 Invalid UPI`\n\n"
+            "⚠️ This will deny the withdrawal with reason.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    target_id = context.args[0]
+    amount = int(context.args[1])
+    reason = " ".join(context.args[2:]) if len(context.args) > 2 else "No reason provided"
+    
+    data = load_data()
+    if target_id not in data["users"]:
+        await update.message.reply_text(f"❌ User `{target_id}` not found!", parse_mode='Markdown')
+        return
+    
+    # Find and update withdrawal request
+    found = False
+    for req in data.get("withdraw_requests", []):
+        if req["user_id"] == target_id and req["amount"] == amount and req["status"] == "pending":
+            req["status"] = "denied"
+            req["denied_by"] = admin_id
+            req["denied_at"] = get_ist_now().isoformat()
+            req["deny_reason"] = reason
+            found = True
+            break
+    
+    if not found:
+        await update.message.reply_text(f"❌ No pending withdrawal of ₹{amount} for user `{target_id}`", parse_mode='Markdown')
+        return
+    
+    save_data(data)
+    
+    # Notify user with reason
+    try:
+        await context.bot.send_message(
+            int(target_id),
+            f"❌ **WITHDRAWAL DENIED!**\n\n"
+            f"💰 Amount: ₹{amount}\n"
+            f"📌 Reason: `{reason}`\n\n"
+            f"⚠️ Your withdrawal request has been denied.\n"
+            f"📌 Contact admin for more details.\n\n"
+            f"👑 Admin: {ESCROW_USER}",
+            parse_mode='Markdown'
+        )
+    except:
+        pass
+    
+    # Notify all admins
+    for admin in ADMINS:
+        try:
+            await context.bot.send_message(
+                admin,
+                f"❌ **WITHDRAWAL DENIED!**\n\n"
+                f"👤 User: `{target_id}`\n"
+                f"💰 Amount: ₹{amount}\n"
+                f"📌 Reason: `{reason}`\n"
+                f"👑 Denied by: @{update.effective_user.username}",
+                parse_mode='Markdown'
+            )
+        except:
+            pass
+    
+    await update.message.reply_text(
+        f"❌ **WITHDRAWAL DENIED!**\n\n"
+        f"👤 User: `{target_id}`\n"
+        f"💰 ₹{amount} denied\n"
+        f"📌 Reason: `{reason}`",
+        parse_mode='Markdown'
+    )
 
 # ============ SETUPI COMMAND ============
 async def setupi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1368,6 +1523,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/approve [id] - Approve work (+₹15)\n"
             "/deny [id] - Deny work (No ₹)\n"
             "/approve_withdraw [id] [amount] - Approve withdrawal\n"
+            "/deny_withdraw [id] [amount] [reason] - Deny withdrawal with reason\n"
             "/cancel #id - Cancel upload\n"
             "/reset all - Reset all (Owner)\n"
             "/newadmin [user_id] - Add admin (Owner)\n"
@@ -1459,6 +1615,7 @@ def main():
     app.add_handler(CommandHandler("approve", approve_command))
     app.add_handler(CommandHandler("deny", deny_command))
     app.add_handler(CommandHandler("approve_withdraw", approve_withdraw_command))
+    app.add_handler(CommandHandler("deny_withdraw", deny_withdraw_command))
     app.add_handler(CommandHandler("newadmin", newadmin_command))
     app.add_handler(CommandHandler("reset", reset_all_command))
     app.add_handler(CommandHandler("cancel", cancel_upload_command))
@@ -1483,8 +1640,9 @@ def main():
     print(f"📱 QR: {len(data['qr_stock'])}/{MAX_QR_UPLOAD}")
     print(f"📝 Review: {len(data['review_stock'])}")
     print(f"⏳ Pending Approvals: {len(data.get('pending_approvals', {}))}")
+    print(f"💰 Withdrawals: {len(data.get('withdraw_requests', []))}")
+    print(f"👑 Admins: {ADMINS}")
     print(f"⏰ Bot Timings: 8 AM - 10 PM IST")
-    print(f"🔴 Maintenance: 10 PM - 8 AM IST")
     
     app.run_polling()
 
